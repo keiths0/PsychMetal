@@ -1,0 +1,6 @@
+*.o
+*.octave.o
+*.matlab.o
+psychmetal_*.csv
+.DS_Store
+dist/
