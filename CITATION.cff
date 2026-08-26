@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: >-
+  If you use PsychMetal in work you publish, please cite it. It is
+  experimental research software and has not been validated against a
+  photodiode; say so if your timing claims depend on it.
+title: "PsychMetal: direct Metal stimulus presentation on Apple silicon"
+abstract: >-
+  A drop-in replacement for Psychtoolbox's Screen that presents through
+  CAMetalLayer and reports MTLDrawable.presentedTime, with native Metal
+  drawing primitives and no OpenGL. Keeps Screen's argument formats so that
+  existing code ports, and copies none of its implementation.
+type: software
+authors:
+  - family-names: Schneider
+    given-names: Keith
+    email: keith@alumni.caltech.edu
+version: 0.4.0
+date-released: "2026-08-25"
+license: MIT
+keywords:
+  - psychophysics
+  - visual-stimulus-presentation
+  - metal
+  - macos
+  - psychtoolbox
+  - stimulus-timing

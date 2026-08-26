@@ -1,6 +1,32 @@
-*.o
-*.octave.o
-*.matlab.o
-psychmetal_*.csv
+# Repository root. The package folder has its own .gitignore for build products.
+
+# macOS
 .DS_Store
-dist/
+
+# Measurement captures. Conclusions drawn from them live in docs/05_results.md;
+# the captures themselves are machine-specific and not reproducible elsewhere.
+*.mat
+*.csv
+
+# Editor and OS clutter
+*~
+*.swp
+.vscode/
+.idea/
+
+# Earlier versions stay on disk and off GitHub. They are reference copies: 0.3.1
+# was never published at all (its notes were folded into 0.4.0), and 0.3.0 is
+# essentially the flat layout that is already in this repository's first commit,
+# so publishing it as a folder would duplicate history that a tag records
+# better. Nothing here affects the release: `make package` copies only from
+# PsychMetal-0.4.0/, so the zip is the same either way.
+#
+# Delete either line to publish that version as a folder.
+PsychMetal-0.3.0/
+PsychMetal-0.3.1/
+
+# The release script sits here, beside the versioned package folder rather than
+# inside it, so it cannot reach the release zip or a user's path. It is also not
+# published: it is a maintainer's tool with one user, and it names a GitHub
+# account. Delete this line if you would rather it were in the repository.
+release-*.sh

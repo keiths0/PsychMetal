@@ -5,19 +5,34 @@ OCTAVE_MEX := PsychMetalCore.mex
 MATLAB_MEX := PsychMetalCore.mexmaca64
 MATLAB_ROOT ?= /Applications/MATLAB_R2026a.app
 SDKROOT := $(shell xcrun -sdk macosx --show-sdk-path)
-FRAMEWORKS := -framework Cocoa -framework Metal -framework QuartzCore -framework OpenGL -framework IOSurface
+# No OpenGL and no IOSurface as of 0.4.0: nothing in the core touches either.
+FRAMEWORKS := -framework Cocoa -framework Metal -framework QuartzCore -framework CoreGraphics
 RELEASE_FLAGS := -O2 -DNDEBUG -Wall -Wextra -Wpedantic
 DIST_DIR := dist/PsychMetal
-PACKAGE_FILES := PsychMetal.m PsychMetalDirectDemo.m \
+PACKAGE_FILES := PsychMetal.m PsychMetalTearTest.m PsychMetalWhenTest.m \
+	PsychMetalLatchTest.m PsychMetalDrawableCompare.m \
+	PTBGeometryCompare.m PsychMetalRateCompare.m PsychMetalWarmupLength.m \
+	PsychMetalMinimalDemo.m PsychMetalMouseRectDemo.m PsychMetalBlobDemo.m PsychMetalTextureDemo.m \
+	PsychMetalDotDemo.m PsychMetalGaborDemo.m PsychMetalNoiseDemo.m \
+	PsychMetalKbDemo.m \
+	PTBTimingTest.m PTBWhenBug.m \
+	PsychMetalFrameStats.m \
+	PsychMetalInputLatencyProbe.m PsychMetalCompositorProbe.m \
+	PsychMetalScheduleSweep.m PsychMetalMixedCadenceProbe.m \
+	PsychMetalCallerSleepProbe.m PsychMetalInventoryTest.m \
 	PsychMetalCore.mm PsychMetalCore.mex \
-	PsychMetalCore.mexmaca64 Makefile build.sh build_all.sh README.md \
-	LICENSE .gitignore
+	PsychMetalCore.mexmaca64 Makefile README.md RELEASE-0.4.0.txt \
+	LICENSE CHANGELOG.md VERSION .gitignore
+HOST_ARCH := $(shell uname -m)
 
-.PHONY: all octave matlab package clean
+.PHONY: all check-arch octave matlab package clean
 
 all: octave matlab
 
-octave: $(OCTAVE_MEX)
+check-arch:
+	@test "$(HOST_ARCH)" = arm64 || { echo "PsychMetal currently supports Apple silicon (arm64) only."; exit 1; }
+
+octave: check-arch $(OCTAVE_MEX)
 
 $(OCTAVE_MEX): $(SOURCE)
 	clang++ -x objective-c++ -std=c++17 -fobjc-arc -fPIC $(RELEASE_FLAGS) \
@@ -25,7 +40,7 @@ $(OCTAVE_MEX): $(SOURCE)
 	LDFLAGS="$$(mkoctfile -p LDFLAGS) $(FRAMEWORKS)" mkoctfile --mex PsychMetalCore.octave.o -o $@
 	@$(RM) PsychMetalCore.octave.o
 
-matlab: $(MATLAB_MEX)
+matlab: check-arch $(MATLAB_MEX)
 
 $(MATLAB_MEX): $(SOURCE)
 	test -d "$(MATLAB_ROOT)" || { echo "Set MATLAB_ROOT to the MATLAB application directory."; exit 1; }

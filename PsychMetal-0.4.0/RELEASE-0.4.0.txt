@@ -1,0 +1,424 @@
+PsychMetal 0.4.0
+Direct Metal presentation on Apple silicon. No OpenGL.
+================================================================================
+
+PsychMetal presents stimuli through a direct macOS Metal path with native Metal
+drawing primitives. As of 0.4.0 there is no OpenGL anywhere in it. It does not
+use Screen('Flip') and does not go through Vulkan or MoltenVK.
+
+MIT licensed. Psychtoolbox is NOT required to run PsychMetal as of 0.4.0, and
+is not included; only the three PTB* comparison files need it, and they exist
+to measure it.
+
+Apple silicon. Built with a deployment target of macOS 14; measured only on
+macOS 27.0 beta with Octave 11.3. Experimental research software, not a
+validated replacement for Psychtoolbox timing: every timing figure below is a
+software timestamp derived from MTLDrawable.presentedTime, none of it has been
+checked against a photodiode, and all of it was measured on a beta OS.
+
+0.3.1 was never published, so its notes are folded in below rather than shipped
+as a release nobody saw.
+
+
+OPENGL IS GONE
+--------------------------------------------------------------------------------
+
+  Through 0.3.1, opening a PsychMetal window opened a 128x96 Psychtoolbox
+  window first. That window existed to supply an OpenGL context and an
+  offscreen framebuffer, so that a pair of IOSurfaces could be wrapped as GL
+  textures with CGLTexImageIOSurface2D and attached to it. Screen drew into one
+  surface, Metal blitted it into the drawable, and the native Metal shapes were
+  drawn on top. That was the only reason any of this needed OpenGL.
+
+  All of it is removed: the GL context requirement, both IOSurfaces (43 MB),
+  the CGL texture wrapping, the glFenceSync/glClientWaitSync pair, the
+  two-surface rotation and the buffer index that existed to alternate them, the
+  full-screen blit and its pipeline and sampler, and the UseOpenGL command that
+  switched the whole thing off. The core links Cocoa, Metal, QuartzCore and
+  CoreGraphics, and nothing else.
+
+  The window now opens with no Psychtoolbox window at all. Geometry comes from
+  CGDisplayBounds and CGGetActiveDisplayList, the nominal refresh from
+  CGDisplayModeGetRefreshRate, after which the fitted refresh grid supersedes
+  it. Open returns width, height, ifi and the point size rather than being told
+  them.
+
+  WHAT THIS COSTS. Screen drawing into a PsychMetal window is no longer
+  possible; the two are separate windows now. PsychMetalDirectDemo, which drew
+  entirely with Screen, and PsychMetalPrimitivesDemo, which showed each Metal
+  primitive beside its Screen twin, are both deleted. That second one was the
+  only visual check that the Metal shapes match Screen's, and there is now no
+  replacement for it.
+
+  PsychMetalLoopCostProbe and PsychMetalContentCostProbe are deleted too: both
+  were 2x2 designs with OpenGL interop as a factor, so neither can be run.
+  Their findings are in docs/05_results.md and were already recorded as
+  superseded.
+
+  WHAT THIS GAINS, beyond the deletion itself: opening a window no longer
+  prints Psychtoolbox's licence banner, renderer block, synchronisation tests
+  or the DESKTOP COMPOSITOR IS ACTIVE warning. That warning described
+  Screen('Flip') on a host window that never flipped, and anyone opening
+  PsychMetal on a new machine reasonably read it as a verdict on PsychMetal's
+  timing.
+
+  Psychtoolbox is no longer required at all. GetSecs, WaitSecs, GetMouse,
+  HideCursor, ShowCursor, KbCheck, KbWait and KbName are all PsychMetal
+  commands now, each one Core Graphics or AppKit directly. Priority has no
+  equivalent and is simply not done; whether real-time scheduling matters for
+  the achieved rate is a measurement nobody has made here.
+
+  The three files named PTB* still require Psychtoolbox, deliberately: they
+  exist to measure it so PsychMetal has a baseline. The naming rule is exact,
+  PsychMetal* runs with Psychtoolbox off the path and PTB* does not.
+
+  Also changed by this: OpenWindow's screen argument now defaults to the last
+  active display rather than max(Screen('Screens')), which is the same display;
+  the window handle is an opaque token rather than a Psychtoolbox offscreen
+  window, so it cannot be passed to Screen; and the Diagnostic history lost its
+  glSyncMs column, which measured the fence.
+
+
+A DROP-IN FOR SCREEN, NOT A REIMPLEMENTATION OF IT
+--------------------------------------------------------------------------------
+
+  The design settles in 0.4.0: PsychMetal replaces Screen rather than
+  coexisting with it. It keeps Screen's ARGUMENT FORMATS, so that replacing
+  Screen( with PsychMetal( in existing code is meant to work, and copies none
+  of its IMPLEMENTATION, so that nothing is shaped by how OpenGL would have
+  done it.
+
+  Colours open on 0 to 255, exactly as Screen's ColorRange does. This is the
+  drop-in property that matters most: at 0 to 1 a ported script would render
+  every stimulus at 1/255 of its intended brightness, silently, because 255 and
+  128 both clamp to white. PsychMetal('ColorRange', w, 1) gives the 0-1
+  convention PsychDefaultSetup(2) gives Screen.
+
+  The queries a ported script calls without thinking are all here now: Rect,
+  WindowSize, GetFlipInterval, ColorRange, BackgroundColor, Resolution,
+  Resolutions, GetSecs, WaitSecs, GetMouse, HideCursor and ShowCursor.
+  GetFlipInterval differs in one way worth knowing: it is measured rather than
+  calibrated at open, returning a least-squares fit to the refresh grid once
+  thirty presentations are confirmed, so it improves during a run instead of
+  being fixed at startup.
+
+  DrawTexture's arguments sit at Screen's positions - filterMode 6,
+  globalAlpha 7, modulateColor 8 - and DrawDots takes dot_type at 6.
+
+  KEYBOARD, WITHOUT PSYCHHID. KbCheck, KbWait and KbName read every attached
+  keyboard through the merged state macOS already maintains, so there is no
+  device enumeration and no per-device quirk handling, and keyCode is indexed
+  by HID usage exactly as Psychtoolbox indexes it. Two limits are documented
+  rather than papered over: there is no deviceNumber, because the merge that
+  makes this easy is what destroys the per-device information; and the
+  timestamp is the moment of the POLL, not of the keypress, so a reaction time
+  measured this way is quantised to the polling interval, with a Bluetooth
+  keyboard adding tens of milliseconds underneath. It advances a trial. It does
+  not measure one.
+
+  Priority and MaxPriority have no equivalent and are not done. Whether
+  real-time scheduling matters for the achieved rate is a measurement nobody
+  has made here.
+
+
+WHAT WAS NEW IN 0.3.1
+--------------------------------------------------------------------------------
+
+NATIVE METAL DRAWING, NO OPENGL
+
+  FillRect, FrameRect, FillOval, FrameOval, DrawDots, DrawLines, DrawGabor
+  and DrawNoise are implemented directly in Metal. All eight share one
+  instanced-quad pipeline; the fragment shader computes coverage from a shape
+  kind, so curved edges antialias analytically rather than by tessellation.
+
+  MakeTexture, DrawTexture and CloseTexture upload straight to an MTLTexture in
+  RGBA16Float. Shapes and textures are kept in call order, so a texture drawn
+  after a rectangle appears on top of it.
+
+  2016 shapes per frame, including 2000 dots, hold 60.000 presentations/s with
+  zero skipped intervals.
+
+  DrawGabor is a sinusoidal carrier under a Gaussian envelope, both evaluated
+  per fragment. sigma is a fraction of the half-size; freq is in cycles per
+  pixel, following Screen('CreateProceduralGabor') so frequencies port across
+  unchanged; angle and phase are degrees. At frequency 0 the carrier term is
+  identically 1, so it is exactly a Gaussian envelope rather than an
+  approximation of one, and a drifting grating is a changed phase argument
+  rather than a re-upload.
+
+  PsychMetalDotDemo is a literal port of Psychtoolbox's DotDemo.m with every
+  Screen/OpenGL drawing call replaced by its PsychMetal equivalent and nothing
+  else changed, so the two can be run side by side and compared. It is derived
+  from Psychtoolbox source and carries the original copyright and history;
+  both projects are MIT licensed. Six things had no one-for-one translation
+  and are marked where they occur in the file.
+
+  PsychMetalGaborDemo is a field of drifting Gabors at independent
+  orientations, with phase advancing on predicted presentation time rather
+  than on the frame counter, so a dropped frame does not slow the drift.
+
+WHITE NOISE WITH NO UPLOAD
+
+  DrawNoise fills a rect with independent per-pixel noise computed in the
+  fragment shader: a pixel's value is a counter-based hash of its position and
+  the seed, so nothing is generated on the CPU and nothing is transferred.
+  'uniform' (default) or 'normal'; 'mono' (default) or 'colour' for an
+  independent value per channel; a mean and a spread that is the half-range for
+  uniform and the SD for normal. The defaults are uniform, monochrome, full
+  spread: every pixel independently and uniformly between black and white.
+
+  THE SEED IS NORMALLY AN OUTPUT. Omit it and one is drawn from the caller's
+  RNG and returned, so an experiment records four bytes per frame rather than a
+  21 MB array and can reconstruct the stimulus exactly. Pass a seed to redraw a
+  frame. A second output returns the values matrix as well, but only when
+  requested: recomputing a frame is the expensive path this command exists to
+  avoid, so it cannot happen by forgetting a flag.
+
+  This is not an optimisation. Generating a full screen on the CPU measures 7.6
+  ms mono uniform, 15.9 ms colour uniform and 50.3 ms mono normal by
+  Box-Muller, over 2880x1864 single-threaded, plus 21.5 MB of upload per frame
+  (1.3 GB/s at 60 Hz). Normal-distributed full-frame noise does not fit in a
+  refresh from the CPU at any plausible speed.
+
+  Being stateless makes it MORE reproducible than a stream RNG, not less.
+  NoiseValues recomputes any frame's values from the seed alone, in any order,
+  so an experiment stores one integer per trial instead of a 21 MB array and can
+  still reconstruct the stimulus for reverse correlation.
+
+  Seeds are limited to 0 through 16777215. The seed reaches the shader inside a
+  float32, and above 2^24 it would silently become a different seed than the one
+  the experiment recorded, so larger values are refused rather than accepted.
+
+  NOT YET VERIFIED ON DEVICE: the shader and the CPU generator duplicate the
+  same hash, and nothing in the suite compares what was drawn against what
+  NoiseValues returns. Reading the drawable back would settle it. The CPU side
+  alone measures uniform sd 0.5775 (1/sqrt(3), correct), normal sd 1.00000,
+  channel correlation -0.002 and neighbouring-pixel correlation +0.001.
+
+BACKGROUND COLOUR, MATCHING Screen('OpenWindow')
+
+  Each frame is cleared to OpenWindow's second argument before any drawing,
+  and PsychMetal('BackgroundColor', w, color) changes it at any time. The
+  clear was previously hardcoded to opaque black and undocumented, so a
+  grey-field experiment had to draw a full-screen rectangle every frame.
+
+  It costs nothing: it is the render pass load action, not a draw. Only
+  visible with UseOpenGL off, because with interop on the full-screen blit
+  writes every pixel and the clear is skipped as pointless work.
+
+  frameLatency held that position and has been removed entirely, not moved;
+  see REMOVED below. This is a breaking change to a positional argument, made
+  before the first public release for that reason.
+
+DRAWABLE COUNT NOW DEFAULTS TO 3
+
+  This was the single largest defect in 0.3.0. The wrapper defaulted to two
+  drawables while the mex defaulted to three. With two, Flip blocks in
+  nextDrawable until the pool frees one, which is a full presentation away,
+  leaving about 3.2 ms of a 16.67 ms refresh for everything else. Loops landing
+  near that boundary have their rate decided by noise.
+
+  Measured across five configurations, 300 frames each, two passes per arm:
+  two drawables gave 30 to 57 presentations/s with 16 to 294 skipped intervals,
+  and repeat passes of identical work disagreed by up to 19 Hz. Three gave
+  60.000 and zero skips in every one.
+
+DRAWABLE PREFETCH, ON BY DEFAULT
+
+  The next frame's drawable is acquired at the END of Flip rather than the
+  start, so the unavoidable wait for one falls before the caller's next input
+  sample instead of after it. Frame time and rate are unchanged; only staleness
+  goes.
+
+  Input sample to photons fell from 2.95 refreshes to 1.96 at 60.000/s with no
+  skips. That is better than two drawables ever managed (1.92 refreshes but 12
+  to 30 dropped frames per 300) at a rate two drawables never held.
+
+  Prefetch needs a spare drawable. With two, holding one leaves nothing to
+  pipeline against and the rate halves, so OpenWindow ties the two settings
+  together and asking for that combination warns.
+
+PRESENTATION TIMESTAMPS ARE NOW CORRECT, WITH ONE EXCEPTION
+
+  Flip returned a timestamp one full refresh earlier than the frame appeared,
+  on about half of frames. Anyone logging it as stimulus onset was wrong by
+  16.7 ms.
+
+  The refresh grid is fitted to confirmed presentations and is good to 0.03
+  microseconds RMS, and the anchor is itself a confirmed presentation, so any
+  boundary is just anchor + n * period. The only unknown is the integer n, and
+  for a CONTINUOUSLY RUNNING loop that is measured: a committed frame is
+  presented at the second grid point at or after the commit, with p01 1.710 and
+  p99 1.843 refreshes over 300 frames.
+
+  n is NOT a constant. With the queue drained it appears to be one boundary
+  rather than two: section 7 recorded 1.035 refreshes from an empty queue, and
+  a 30-refresh hold lands one boundary after its commit. The prediction assumes
+  two unconditionally, so the FIRST flip after an idle period - the start of a
+  trial, a stimulus after a blank - is likely predicted a refresh late. That
+  case is not covered by any test. Two observations on different code paths is
+  all the evidence there is for it.
+
+  The prediction now uses exactly that. Median error against the confirmed
+  presentation went from one full refresh to 16 nanoseconds.
+
+  This holds for immediate flips. Scheduled flips are handled by Apple's
+  scheduler; see below.
+
+ONLINE DROPPED-FRAME DETECTION
+
+  Flip's fifth return value reports how many refreshes the PREVIOUS confirmed
+  presentation missed its prediction by; zero means it landed where predicted.
+  presentedTime for frame N arrives about half a millisecond after N is shown,
+  so the truth about N is known by the time Flip is called for N+1. Beam
+  position is unavailable on this hardware and Screen returns a constant -1 in
+  that slot, so it carries something useful instead.
+
+    [vbl, ~, ~, missed, slipped] = PsychMetal('Flip', w);
+
+  A late presentation no longer drags its successors with it. Previously one
+  slipped frame left the schedule anchored to a stale timestamp and the next
+  several requests landed in the past, so a single event was scored as four
+  failures. Scheduled-gap failures across ~508 presentations went from 6 in a
+  run of 4 to between 1 and 4, with the longest run varying from 1 to 3 across
+  repeat runs. The cascade is much reduced but not eliminated.
+
+SCHEDULED PRESENTATION NOW USES APPLE'S SCHEDULER, AND ONLY APPLE'S
+
+  Flip(w, when) put a request exactly four refreshes ahead one refresh late, on
+  97 to 99% of frames, while every other cadence was exact. It is fixed, and the
+  fix was to delete the scheduling rather than repair it.
+
+  Three mechanisms were measured, one at a time:
+
+    our commit timing decides the boundary, plain present       99% late
+    Apple decides, but we sleep to within four refreshes        96% late
+    Apple alone; commit immediately, no sleep at all             1% late
+
+  The third measures 0 to 1% late across cadences 1 to 12, 120 frames each, in
+  three consecutive sweeps. The other two are deleted, not kept as options.
+
+  The same change fixed the returned timestamp. Projected minus confirmed went
+  from 120 frames of 510 a refresh early (23.6%) to 1 of 510 (0.2%): the
+  scheduling defect and the prediction defect were one bug seen from two ends,
+  since the prediction was derived from a commit moment we were choosing badly.
+
+  The defect was ours. presentDrawable:atTime: knows the display's schedule and
+  every frame queued against it; our sleep, our fitted refresh grid and our
+  commit-lead arithmetic were all attempts to compute something the system
+  already knew, and the four-refresh case is where the two disagreed. That is
+  why nothing about the pipeline ever explained it: a cadence threshold, the
+  deferred submission branch, the commit lead (varied over 2.5 refreshes with no
+  effect), the rhythm (99% late inside a randomised sequence), the preceding
+  gap, the prediction and noise were all eliminated in turn, over many hours,
+  while the cause was that we were scheduling at all.
+
+  Two bounds remain, both about drawable occupancy and neither about timing.
+  Frames in flight are capped at two. Targets more than fifteen refreshes out
+  sleep until twelve refreshes before the target, because a three-second target
+  would otherwise hold a drawable for three seconds and two of those stall the
+  loop. Fifteen refreshes is far outside the range where cadence was measured,
+  so the guard cannot place a frame - which is exactly the distinction the two
+  deleted mechanisms got wrong.
+
+
+UseOpenGL
+
+  Declares whether frames on a window contain any Screen drawing. Off removes
+  the OpenGL fence, the two-IOSurface rotation and the full-screen blit.
+
+  This is NOT a performance switch, despite appearances. With two drawables,
+  turning it off moved the flip from 29.7 ms to 13.4 ms and the rate from 30.5
+  to 51.8 presentations/s, which looked decisive. It was an artifact of a
+  starved drawable pool: with three drawables, interop ON flips in 13.5 ms and
+  holds 60.000 with zero skips. Its honest value is that it skips work which
+  cannot affect the image.
+
+REMOVED
+
+  frameLatency, the OpenWindow argument that set
+  CAMetalDisplayLink.preferredFrameLatency. It was measured to do nothing: the
+  scheduling horizon was 2.995 to 2.997 refreshes at every combination of
+  requested latency and drawable count, while the property read back the
+  assigned value correctly in all of them. Requesting 2 under Game Mode gave
+  ONE refresh, less than asked for, so it is ignored in both directions rather
+  than being the documented case of the system needing more time.
+
+  The finding stays in docs/05_results.md section 2, and the Feedback Assistant
+  reproducer is the standalone fblatency.m, which needs no part of PsychMetal.
+  Gone with it: the requestedFrameLatency and frameLatencyReadback Diagnostic
+  fields, and PsychMetalLatencySweepTest, whose 2x2 was frame latency crossed
+  with drawable count and which without it collapses to a drawable-count
+  comparison PsychMetalRateCompare and PsychMetalDrawableCompare already make.
+
+  AppKit managed fullscreen, because it cannot position correctly on a notched
+  display and gave identical timing. Game Mode, because it required managed
+  fullscreen and did nothing in direct presentation mode.
+
+FIXED
+
+  - Flip returned NaN as the presentation timestamp on the first flips after
+    OpenWindow. The refresh grid has no anchor until a presentation is
+    confirmed, and the prediction passed the NaN straight to the caller, so a
+    caller computing its next request as vbl + (n - 0.5) * ifi was told its
+    'when' was not finite. It now falls back to the provisional estimate until
+    the grid is anchored. Every timing test warms up 90 to 120 frames before
+    measuring, which is why none of them saw it; a real experiment's first flip
+    would have. Found by PsychMetalInventoryTest on its first run.
+  - Shape instance buffers advanced through a four-slot ring at every flush
+    rather than once per frame, so a frame containing several textures could
+    wrap the ring and overwrite data an earlier draw in the same command buffer
+    still referenced.
+  - Diagnostic reported calibratedTargetLagFrames and
+    observedTargetOffsetFrames as about 1.4e+07. Both derive from
+    CAMetalDisplayLink's targetPresentationTimestamp, which is never populated
+    in direct mode; they now report NaN there.
+  - make package omitted PsychMetalFrameStats.m, which eight shipping demos and
+    tests require, and referenced a .gitignore that did not exist. Both fixed.
+
+
+WHAT IT MEASURES
+--------------------------------------------------------------------------------
+
+  Presentation rate               60.000/s, zero skipped intervals
+  Interval stability              84 ns across 300 frames (2 timebase ticks)
+  Input sample to photons         1.96 refreshes
+  Commit to photons               1.75 refreshes
+  Predicted vs confirmed onset    ~16 ns, immediate flips
+  Refresh period                  59.999894 Hz, repeatable to 0.043 ppm
+
+
+KNOWN ISSUES
+--------------------------------------------------------------------------------
+
+  - The first flip after an idle period is probably predicted a refresh late.
+    The prediction assumes a committed frame appears two boundaries later,
+    which is measured and holds for a continuous loop; with the queue drained
+    it appears to be one boundary. Uncharacterised, two observations on
+    different code paths, and it applies to the start of a trial and to a
+    stimulus after a blank, which is where it matters most. No test covers it.
+
+  - A late presentation can still drag one or two successors with it. The
+    original four-frame cascade is gone, but runs of up to three have been seen
+    in repeat runs of PsychMetalWhenTest, against runs of one in others. Rate
+    across runs is 0.2 to 0.8 percent.
+
+  - Sporadic late presentations, 0.2 to 0.8 percent across runs. Pre-existing
+    and not understood.
+
+  - One refresh of compositor latency that no application-visible setting
+    removes. The layer is opaque, framebufferOnly, BGRA8Unorm, with no EDR, on
+    a captured display behind a borderless window at shielding level. With
+    displaySyncEnabled off the same frames reach the display in a quarter of a
+    refresh at 484 to 527 presentations/s, so the frame is complete and idle for
+    a full refresh before it is shown. See docs/05_results.md section 9d and
+    Feedback Assistant item 2.
+
+  - Sections 2, 3 and 7 of docs/05_results.md were measured at two drawables,
+    the regime this release identifies as unreliable. Section 8's resolution
+    result was re-measured under the new defaults and held; the
+    preferredFrameLatency and Game Mode results were not.
+
+  - No photodiode validation of presentedTime against light onset. This is the
+    largest open question and the reason none of this is yet suitable for
+    running an experiment.
