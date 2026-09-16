@@ -28,11 +28,28 @@ other file here contains Psychtoolbox source.
 
 | | |
 | --- | --- |
-| `PsychMetal-0.4.0/` | the toolbox — add this folder to your path |
+| `PsychMetal-0.4.2/` | current toolbox — add this folder to your path |
+| `PsychMetal-0.4.0/` | archived earlier version |
 | `docs/` | measurements, specifications, and the Feedback Assistant report |
 | `fblatency.m` | standalone Objective-C reproducer for the `preferredFrameLatency` bug in `docs/04_feedback_assistant_report.md`. Objective-C despite the `.m` extension — it is compiled with `clang`, not run in MATLAB |
 
-Start with `PsychMetal-0.4.0/README.md`.
+Start with [`PsychMetal-0.4.2/README.md`](PsychMetal-0.4.2/README.md).
+
+## Latest release: 0.4.2
+
+Download [PsychMetal 0.4.2](https://github.com/keiths0/PsychMetal/releases/tag/v0.4.2).
+It fixes native mouse polling and Retina coordinate conversion, and adds a
+background keyboard queue that retains key transitions while MATLAB or Octave
+is busy.
+
+Version 0.4.2 also includes the 0.4.1 fixes: corrected `DrawTexture` calls and
+color values in the texture and dot demos, corrected argument documentation,
+clearer errors for outdated calls, and inventory checks for old call signatures.
+Version 0.4.1 was an intermediate version, not a separate GitHub release; its
+changes are included in 0.4.2.
+
+See the [complete changelog](PsychMetal-0.4.2/CHANGELOG.md), including the
+separate 0.4.1 entry, and the [keyboard queue documentation](PsychMetal-0.4.2/KEYBOARD-QUEUE.md).
 
 ## What it measures
 
