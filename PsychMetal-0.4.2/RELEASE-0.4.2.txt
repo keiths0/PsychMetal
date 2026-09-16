@@ -1,0 +1,77 @@
+PsychMetal 0.4.2 — native mouse polling fix and keyboard queue
+2026-09-15
+
+Based on the user's supplied PsychMetal-0.4.1 directory. The original 0.4.1
+source and binaries have not been modified. This is a separate release.
+
+Keyboard queue
+--------------
+The main MEX now contains a general background-polled keyboard queue, replacing
+the standalone T-key helper used by the k-space demos. Key masks use KbCheck's
+HID codes and sided-modifier mapping. Press/release transitions are retained
+with detection timestamps while the host is busy. KbCheck is unchanged.
+
+Create/Start/Stop/Flush/Release manage one queue; GetEvents drains an Nx3 FIFO
+[time, HID code, pressed] with a dropped-event count; Check separately consumes
+first/last press/release summaries. Capacity is 4096, retaining newest events
+on overflow. Close/unload releases resources. See KEYBOARD-QUEUE.md for precise
+lifecycle and limits. This polls by default every 2 ms; it is not an OS event
+tap, a full Psychtoolbox queue clone, or validated reaction-time instrumentation.
+
+The production native worker passed synthetic-state tests for key filtering,
+short taps across host waits, timestamps, held keys, stop/restart, summary and
+FIFO consumption, flush/release, and overflow. Physical keyboard/display checks
+remain to be run on the user's Mac. Both binaries are rebuilt with this queue.
+
+Changed mouse behavior
+----------------------
+The main PsychMetalCore MEX now obtains mouse position with CGEventCreate /
+CGEventGetLocation and button state with CGEventSourceButtonState using the
+combined session state. It no longer depends on NSEvent's cached AppKit state
+being updated by event dispatch in the host application's loop.
+
+Position and display bounds now share CoreGraphics' global top-left coordinate
+system. Coordinates are converted to the actual renderWidth/renderHeight used
+by OpenWindow and the drawing functions. This avoids mixing native display
+pixel sizes with scaled Retina render sizes. Coordinates outside the display
+remain unclamped. GetMouse still returns x, y and a logical 1x3 vector in
+[left right middle] order. No public API changes, event taps, new permissions,
+new runtime dependencies, or separate mouse-reader MEX are introduced.
+
+GetMouse remains instantaneous state polling. It does not record click history
+or guarantee detection of presses and releases between successive calls.
+
+Build and validation
+--------------------
+Both Apple Silicon MEX binaries are rebuilt from the patched source with the
+included Makefile (force rebuild: make -B all). The MATLAB binary uses the
+installed MATLAB R2026a headers/libraries. Run the regression test with:
+
+    python3 tests/test_mouse_dispatch.py
+
+It compiles the actual Mouse dispatch extracted from PsychMetalCore.mm against
+stubbed CoreGraphics and MEX APIs. It checks changing/held/released button
+states without AppKit event processing, button ordering, logical output shape,
+Retina and 1x coordinate scaling, displays above/left/right of the primary,
+unclamped off-display positions, invalid arguments, missing window/display
+geometry, failed event allocation, and CGEvent release.
+
+Physical mouse behavior and native Metal presentation need confirmation on the
+user's Mac: this execution environment reports no active displays. Passing the
+stubbed regression does not establish hardware-level behavior. MATLAB runtime
+execution has not been tested.
+
+Switching versions
+------------------
+Close the old PsychMetal window before switching. Clear PsychMetal and
+PsychMetalCore from memory, add this folder at the beginning of the path, and
+check that `which PsychMetal` and `which PsychMetalCore` both resolve here.
+PsychMetal('Version') returns 0.4.2.
+
+Run PsychMetalMouseRectDemo(20): the rectangle should follow the pointer and
+any held mouse button should stop the demo. PsychMetalMouseTest(30) keeps
+running through clicks so individual press/hold/release transitions can be
+checked. Q/Escape exits the latter.
+
+K-space programs and personal images are not part of the library release.
+Updated standalone demos use the new queue and need no helper binary.
