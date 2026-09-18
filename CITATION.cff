@@ -5,7 +5,7 @@ message: >-
   photodiode; say so if your timing claims depend on it.
 title: "PsychMetal: direct Metal stimulus presentation on Apple silicon"
 abstract: >-
-  A drop-in replacement for Psychtoolbox's Screen that presents through
+  A native Metal presentation library with supported Screen-style commands that presents through
   CAMetalLayer and reports MTLDrawable.presentedTime, with native Metal
   drawing primitives and no OpenGL. Keeps Screen's argument formats so that
   existing code ports, and copies none of its implementation.
@@ -14,8 +14,8 @@ authors:
   - family-names: Schneider
     given-names: Keith
     email: keith@alumni.caltech.edu
-version: 0.4.0
-date-released: "2026-08-25"
+version: 0.4.3
+date-released: "2026-09-17"
 license: MIT
 keywords:
   - psychophysics
