@@ -2,7 +2,7 @@
 
 ## 0.5.0 — unreleased
 
-Python support, through one native engine shared by every host. Not yet validated on hardware. The native interface (`PsychMetalCore`) is internal and was changed without regard to 0.4.3; scripts that call `PsychMetal` keep working.
+Python support, through one native engine shared by every host. Built from source; the MATLAB build is untested. The native interface (`PsychMetalCore`) is internal and was changed without regard to 0.4.3; scripts that call `PsychMetal` keep working.
 
 ### Changes
 

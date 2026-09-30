@@ -1,8 +1,8 @@
-# PsychMetal 0.5.0 (in development)
+# PsychMetal 0.5.0
 
 PsychMetal provides native Metal stimulus presentation on Apple Silicon macOS, with an interface resembling supported Psychtoolbox Screen commands, now from MATLAB, Octave and Python. It uses no OpenGL or Vulkan presentation backend. It is experimental research software, not a complete Screen replacement.
 
-**Status.** This is the 0.5.0 development branch. It has not been released or hardware-validated; no binaries are included, so build them first (below). For a validated package, use PsychMetal-0.4.3.
+**Status.** No binaries are included, so build them first (below). On the tested 6016×3384, 60 Hz display the Octave and Python builds pass the full regression suite and the Python inventory test; the MATLAB build is untested, and 0.4.3's timing validation has not been repeated. For a packaged release with binaries, use PsychMetal-0.4.3.
 
 ## What changed in 0.5.0
 
@@ -85,7 +85,7 @@ Useful demos: PsychMetalTextureDemo, PsychMetalGaborDemo, PsychMetalNoiseDemo, P
 
 OpenWindow confirms two consecutive background presentations before returning, keeping startup history separate from stimulus history. This removes unconfirmed startup presentations from the first user stimulus in the tested repeated-open cases. It does not eliminate the time required to initialize the window or guarantee every future frame.
 
-Flip timing comes from Metal presentation reports, not a photodiode. Scheduled presentation is quantized by the display refresh. [VALIDATION.md](VALIDATION.md) records the 0.4.3 measurements; 0.5.0 has not yet been measured on hardware. [CHANGELOG.md](CHANGELOG.md) lists changes.
+Flip timing comes from Metal presentation reports, not a photodiode. Scheduled presentation is quantized by the display refresh. [VALIDATION.md](VALIDATION.md) records the 0.4.3 measurements; 0.5.0's timing has not yet been measured to that standard. [CHANGELOG.md](CHANGELOG.md) lists changes.
 
 For manual hardware checks in a fresh host session:
 
