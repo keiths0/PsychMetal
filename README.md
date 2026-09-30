@@ -11,15 +11,15 @@ Native Metal stimulus presentation for Apple Silicon macOS, with MATLAB, Octave 
 
 Version 0.5.0 adds a Python interface (`import psychmetal`) on the same native engine as MATLAB and Octave, with every PsychMetal command, numpy images read without copying, and Python versions of every demo and hardware check. It also adds `DrawTextures`, which draws many textures in one call, as Screen's does. The presentation, timing, texture and input internals are those validated for 0.4.3.
 
-0.5.0 is built from source (`make octave`, `make matlab`, `make python`); no binaries are included. On the tested 6016×3384, 60 Hz display, the Octave and Python builds passed the full regression suite and the Python inventory test passed all 156 checks across 52 commands. The MATLAB build has not yet been tested, and 0.4.3's timing validation has not been repeated under 0.5.0.
+Binaries are included for Octave 11.3.0 (Homebrew), MATLAB R2026a and Python 3.14 on Apple silicon; for other versions, rebuild with `make octave`, `make matlab` or `make python`. On the tested 6016×3384, 60 Hz display, the full regression suite passed, and the inventory tests passed in every host: Octave 153/153 and MATLAB 153/153 checks across 50 commands, Python 156/156 across 52. 0.4.3's timing validation has not yet been repeated under 0.5.0. Metal timestamps have not been validated with a photodiode, in any version; no physical input-to-photon accuracy or universal frame-rate guarantee is claimed.
 
-## Latest packaged release: 0.4.3
+## Previous release: 0.4.3
 
-- [Download the release](https://github.com/keiths0/PsychMetal/releases/tag/v0.4.3), with Octave and MATLAB binaries
+- [Download the 0.4.3 release](https://github.com/keiths0/PsychMetal/releases/tag/v0.4.3)
 - [Installation, demos and build instructions](PsychMetal-0.4.3/README.md)
 - [Validation and timing limitations](PsychMetal-0.4.3/VALIDATION.md)
 
-The final Octave build of 0.4.3 passed all 151 inventory checks across 49 commands and 10/10 repeated-open/first-stimulus checks on the tested display. Metal timestamps have not been validated with a photodiode. No physical input-to-photon accuracy or universal frame-rate guarantee is claimed. The supplied Octave binary links Homebrew Octave 11.3.0; other installations may require rebuilding.
+The final Octave build of 0.4.3 passed all 151 inventory checks across 49 commands and 10/10 repeated-open/first-stimulus checks on the tested display. The supplied Octave binary links Homebrew Octave 11.3.0; other installations may require rebuilding.
 
 Add only one version folder to your host path, not its tests/mock subdirectory. Restart Octave/MATLAB before switching native builds after opening graphics.
 

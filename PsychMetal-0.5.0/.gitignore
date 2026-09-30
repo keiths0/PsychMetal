@@ -1,9 +1,7 @@
-# Build intermediates and products (make octave / matlab / python). Released
-# binaries are added to a release folder with its manifest, not built here.
+# Build intermediates. The binaries themselves (PsychMetalCore.mex,
+# PsychMetalCore.mexmaca64, python/psychmetal/_psychmetal*.so) are committed,
+# so the package runs without a compiler.
 *.o
-PsychMetalCore.mex
-PsychMetalCore.mexmaca64
-python/psychmetal/_psychmetal*.so
 dist/
 
 # macOS

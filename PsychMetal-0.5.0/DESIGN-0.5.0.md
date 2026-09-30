@@ -1,6 +1,6 @@
 # PsychMetal 0.5.0 design: one engine, two front ends
 
-Status: built and tested on a Mac through the Octave and Python front ends (see "First hardware results"); the MATLAB build is untested. Everything below is checked by the tests in `tests/` except where "Unverified until hardware" says otherwise.
+Status: built and tested on a Mac through all three front ends (see "First hardware results"). Everything below is checked by the tests in `tests/` except where "Unverified until hardware" says otherwise.
 
 ## Goal
 
@@ -130,13 +130,12 @@ A timing diagnostic (not distributed) on macOS 27.2, Python 3.14, a 6016x3384 di
 - One 2-refresh interval in 3,600 frames (main thread, not serviced), with normal CPU work around it: the drawable wait before the following flip took two refreshes. Not attributable to the front end.
 - In the loop, each call costs about 10x its isolated microbenchmark (e.g. `fill_rect` 0.25–0.3 ms vs 0.017 ms), and the still half costs more than the moving half; both point to CPU frequency scaling while the loop idles in flip, not to per-call overhead.
 
-On the same display after the texture and wrapper changes: `make octave && make python && make test` passed every check, including the Mac-only real-extension, keyboard-queue and Metal shader tests; `python/inventory_test.py` passed 156/156 checks across 52 commands; `python/texture_demo.py` drew 5 textures per frame from 2 uploads at 59.94 presentations/s with one late frame in 1,200.
+On the same display after the texture and wrapper changes: `make octave && make python && make test` passed every check, including the Mac-only real-extension, keyboard-queue and Metal shader tests; `python/inventory_test.py` passed 156/156 checks across 52 commands; `python/texture_demo.py` drew 5 textures per frame from 2 uploads at 59.94 presentations/s with one late frame in 1,200. `make matlab` compiled against MATLAB R2026a's `mex.h` with no warnings, and PsychMetalInventoryTest passed 153/153 checks across 50 commands in both MATLAB and Octave 11.3.0 on the real engine.
 
 ### Unverified until hardware
 
-- The first compile of `PsychMetalMex.cpp` against MATLAB's own `mex.h`.
 - Everything the timing work established for 0.4.3 (VALIDATION.md), rerun under MATLAB, Octave and Python.
-- The remaining Python demos and hardware checks on a real display, and PsychMetalInventoryTest under Octave with the real engine.
+- The remaining demos and hardware checks on a real display, in each host.
 - Frame timing under MATLAB and Octave with the 0.5.0 engine. By construction it matches 0.4.3: the same engine code runs, and per-call overhead is microseconds.
 
 ## Invariants the engine must keep

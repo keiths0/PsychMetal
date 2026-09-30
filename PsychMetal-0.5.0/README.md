@@ -2,7 +2,7 @@
 
 PsychMetal provides native Metal stimulus presentation on Apple Silicon macOS, with an interface resembling supported Psychtoolbox Screen commands, now from MATLAB, Octave and Python. It uses no OpenGL or Vulkan presentation backend. It is experimental research software, not a complete Screen replacement.
 
-**Status.** No binaries are included, so build them first (below). On the tested 6016×3384, 60 Hz display the Octave and Python builds pass the full regression suite and the Python inventory test; the MATLAB build is untested, and 0.4.3's timing validation has not been repeated. For a packaged release with binaries, use PsychMetal-0.4.3.
+**Status.** Binaries are included for Octave 11.3.0 (Homebrew), MATLAB R2026a and Python 3.14, all Apple silicon; for other versions, build them (below). On the tested 6016×3384, 60 Hz display the full regression suite passes and the inventory test passes in every host (Octave and MATLAB 153/153, Python 156/156). 0.4.3's timing validation has not yet been repeated under 0.5.0.
 
 ## What changed in 0.5.0
 
@@ -31,7 +31,7 @@ make python PYTHON=/path/to/python3                  # for a particular Python
 make test
 ```
 
-The Python extension needs only clang and that Python's headers; numpy is needed at run time. Build it with the Python you will run it with; it must be an arm64 build.
+The included Python extension is for Python 3.14; any other Python needs `make python`, run with that Python. The extension needs only clang and that Python's headers; numpy is needed at run time. The Python must be an arm64 build.
 
 ## MATLAB and Octave
 
