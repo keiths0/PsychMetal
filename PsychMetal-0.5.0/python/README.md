@@ -2,7 +2,11 @@
 
 Native Metal stimulus presentation on Apple silicon Macs, from Python, with an interface resembling Psychtoolbox's Screen. There is no OpenGL anywhere in the path. The same engine serves [PsychMetal](https://github.com/keiths0/PsychMetal) for MATLAB and Octave.
 
+Install it into a virtual environment. Homebrew's Python (and any Python following PEP 668) refuses packages installed outside one:
+
 ```bash
+python3 -m venv ~/venvs/psychmetal          # once
+source ~/venvs/psychmetal/bin/activate      # in each new Terminal window
 pip install psychmetal
 ```
 

@@ -48,11 +48,13 @@ Adjust the path if installed elsewhere. Add only this folder, **not genpath**: t
 ## Python
 
 ```bash
+python3 -m venv ~/venvs/psychmetal       # once: a virtual environment
+source ~/venvs/psychmetal/bin/activate   # in each new Terminal window
 pip install psychmetal                   # from PyPI, once published
 pip install ./PsychMetal-0.5.0           # or from a clone of this repository
 ```
 
-pip builds the extension for whichever Python runs it, with Apple's clang. Alternatively, put this folder's `python/` on `PYTHONPATH` and use the included Python 3.14 extension, or `make python`.
+Homebrew's Python refuses packages installed outside a virtual environment, hence the first two lines. pip builds the extension for whichever Python runs it, with Apple's clang. The pip-built package passed the full Python inventory test (156/156) on the tested display. Alternatively, put this folder's `python/` on `PYTHONPATH` and use the included Python 3.14 extension, or `make python`.
 
 ```python
 import psychmetal as pm
