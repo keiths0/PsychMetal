@@ -50,7 +50,7 @@ Adjust the path if installed elsewhere. Add only this folder, **not genpath**: t
 ```bash
 python3 -m venv ~/venvs/psychmetal       # once: a virtual environment
 source ~/venvs/psychmetal/bin/activate   # in each new Terminal window
-pip install psychmetal                   # from PyPI, once published
+pip install psychmetal                   # from PyPI
 pip install ./PsychMetal-0.5.0           # or from a clone of this repository
 ```
 
