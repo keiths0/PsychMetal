@@ -1,0 +1,17 @@
+# Build intermediates and products (make octave / matlab / python). Released
+# binaries are added to a release folder with its manifest, not built here.
+*.o
+PsychMetalCore.mex
+PsychMetalCore.mexmaca64
+python/psychmetal/_psychmetal*.so
+dist/
+
+# macOS
+.DS_Store
+
+# Measurement output from the tests and hardware checks
+*.csv
+*.mat
+PsychMetalMotion-*
+PsychMetalOpenReady-*
+__pycache__/

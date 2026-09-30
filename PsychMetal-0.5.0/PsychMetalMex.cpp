@@ -1,0 +1,574 @@
+// PsychMetalMex.cpp — the MATLAB / Octave front end: PsychMetalCore's
+// mexFunction over the host-neutral engine (PsychMetalEngine.h).
+// SPDX-License-Identifier: MIT
+//
+// PsychMetal.m is the only intended caller. This file only unpacks mxArrays,
+// calls the engine and packs the results; validation beyond "is this the right
+// kind of MATLAB value" belongs to the engine.
+#include "mex.h"
+#include "PsychMetalEngine.h"
+
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <strings.h>
+
+namespace {
+
+char command[64];
+bool is(const char *s) { return strcasecmp(command, s) == 0; }
+
+[[noreturn]] void fail(const char *s) { throw pm::Error(pm::kErrGeneral, s); }
+
+// A real, dense, one-element numeric value, then finite.
+double scalar(const mxArray *a, const char *name) {
+    if (!mxIsNumeric(a) || mxIsComplex(a) || mxIsSparse(a) || mxGetNumberOfElements(a) != 1)
+        pm::failNotScalar(name);
+    return pm::checkFinite(mxGetScalar(a), name);
+}
+uint64_t unsignedScalar(const mxArray *a, const char *name, uint64_t maximum) {
+    return pm::checkUnsigned(scalar(a, name), name, maximum);
+}
+
+bool isRealDouble(const mxArray *a) { return mxIsDouble(a) && !mxIsComplex(a) && !mxIsSparse(a); }
+
+pm::ScalarType typeOf(const mxArray *a, size_t &elementSize) {
+    elementSize = 0;
+    if (mxIsComplex(a) || mxIsSparse(a)) return pm::ScalarType::Other;
+    if (mxIsDouble(a))  { elementSize = 8; return pm::ScalarType::Float64; }
+    if (mxIsSingle(a))  { elementSize = 4; return pm::ScalarType::Float32; }
+    if (mxIsUint8(a))   { elementSize = 1; return pm::ScalarType::UInt8; }
+    if (mxIsLogical(a)) { elementSize = sizeof(mxLogical); return pm::ScalarType::Bool; }
+    return pm::ScalarType::Other;
+}
+
+// An HxW or HxWxC MATLAB array as a column-major (H, W[, C]) view, read in place.
+pm::ArrayView imageView(const mxArray *a) {
+    pm::ArrayView v;
+    size_t es = 0;
+    v.type = typeOf(a, es);
+    mwSize nd = mxGetNumberOfDimensions(a);
+    if (nd > 3) { v.type = pm::ScalarType::Other; nd = 3; }
+    const mwSize *d = mxGetDimensions(a);
+    v.data = mxGetData(a);
+    v.ndim = (int)nd;
+    for (mwSize i = 0; i < nd; i++) v.shape[i] = d[i];
+    v.strides = {(ptrdiff_t)es, (ptrdiff_t)(es * v.shape[0]), (ptrdiff_t)(es * v.shape[0] * v.shape[1])};
+    return v;
+}
+
+// AddShapes arguments. A 1xN MATLAB row is logical shape (N); a 4xN matrix is
+// (N, 4), since each shape's four values are contiguous in column-major order.
+// Anything else is passed with ndim 0 so the engine reports it.
+pm::ArrayView rowView(const mxArray *a) {
+    pm::ArrayView v;
+    size_t es = 0;
+    v.type = typeOf(a, es);
+    if (v.type != pm::ScalarType::Float64) return v;
+    v.data = mxGetData(a);
+    if (mxGetNumberOfDimensions(a) == 2 && mxGetM(a) == 1) {
+        v.ndim = 1; v.shape[0] = mxGetN(a); v.strides[0] = 8;
+    }
+    return v;
+}
+pm::ArrayView columnsView(const mxArray *a) {
+    pm::ArrayView v;
+    size_t es = 0;
+    v.type = typeOf(a, es);
+    if (v.type != pm::ScalarType::Float64) return v;
+    v.data = mxGetData(a);
+    if (mxGetNumberOfDimensions(a) == 2 && mxGetM(a) == 4) {
+        v.ndim = 2; v.shape[0] = mxGetN(a); v.shape[1] = 4; v.strides[0] = 32; v.strides[1] = 8;
+    }
+    return v;
+}
+
+mxArray *row(std::initializer_list<double> values) {
+    mxArray *m = mxCreateDoubleMatrix(1, values.size(), mxREAL);
+    double *p = mxGetPr(m);
+    for (double v : values) *p++ = v;
+    return m;
+}
+mxArray *rect4(const pm::Rect4 &r) { return row({r[0], r[1], r[2], r[3]}); }
+
+mxArray *startupMatrix(const std::vector<pm::StartupRecord> &records) {
+    size_t n = records.size();
+    mxArray *out = mxCreateDoubleMatrix(n, 6, mxREAL);
+    double *v = mxGetPr(out);
+    for (size_t i = 0; i < n; i++) {
+        const pm::StartupRecord &r = records[i];
+        v[i] = (double)r.token; v[i + n] = r.status; v[i + 2 * n] = r.presentedTime;
+        v[i + 3 * n] = r.callbackTime; v[i + 4 * n] = r.gpuDone; v[i + 5 * n] = r.committedTime;
+    }
+    return out;
+}
+
+mxArray *historyMatrix(const std::vector<pm::FrameRecord> &records) {
+    size_t count = records.size();
+    mxArray *out = mxCreateDoubleMatrix(count, 17, mxREAL);
+    double *v = mxGetPr(out);
+    for (size_t row = 0; row < count; row++) {
+        const pm::FrameRecord &r = records[row];
+        const double cols[17] = {(double)r.token, r.projected, r.presented, (double)r.status,
+                                 r.scheduledAt, r.callback, (double)r.commandStatus, r.requestedTime,
+                                 r.gpuStart, r.gpuEnd, r.presentRequest, r.presentCallMs, r.committedAt,
+                                 r.drawableAcquireMs, r.encodeMs, r.prefetchMs, r.pacingMs};
+        for (size_t c = 0; c < 17; c++) v[row + count * c] = cols[c];
+    }
+    return out;
+}
+
+mxArray *diagnosticStruct(const pm::DiagnosticSummary &d) {
+    const char *n[] = {
+        "confirmedPresentations", "missingPresentedTimes",
+        "lastTargetErrorMs",     "lastConfirmDelayMs",     "appKitScreenIndex",
+        "cgDisplayID",           "renderWidth",            "renderHeight",
+        "drawableWidth",         "drawableHeight",        "inFlight",
+        "requestedDrawableCount",  "drawableCountReadback",
+        "hostBundleIdentifier",  "activationPolicyBefore",
+        "activationPolicyAfter", "activationPolicyPromotionAttempted",
+        "activationPolicyPromotionSucceeded", "macOSVersion", "processName",
+        "machTimebaseHz",        "machTickNanoseconds",
+        "waitForConfirm",        "measuredRefreshHz",
+        "gridSamples",           "directNoDrawable",       "directConfirmTimeouts",
+        "leadEstimateMs",
+        "pipelineEstimateMs",      "gpuEstimateMs",          "displaySyncEnabled",
+        "displayCaptured",
+        "modePointWidth",          "modePixelWidth",         "largestModePixelWidth",
+        "shapesAppended",          "shapesEncoded",          "shapeEncodeCalls",
+        "texturesCreated",         "texturesDrawn", "textureAllocations", "textureUpdates", "lastTextureUploadMs",
+        "lastShapeRect",           "lastShapeColor",         "lastShapeKind",
+        "windowFrame",             "viewBounds",             "layerFrame",
+        "screenFrame",             "screenVisibleFrame",     "screenSafeAreaInsets",
+        "cgDisplayBounds",         "backingScaleFactor", "timingPolicy", "keyScanMaxMs", "secureQueryMaxMs", "keyScanMeanMs", "secureQueryMeanMs", "keyReadCount"};
+    mxArray *s = mxCreateStructMatrix(1, 1, (int)(sizeof(n) / sizeof(n[0])), n);
+    auto num = [&](const char *f, double v) { mxSetField(s, 0, f, mxCreateDoubleScalar(v)); };
+    auto flag = [&](const char *f, bool v) { mxSetField(s, 0, f, mxCreateLogicalScalar(v)); };
+    auto text = [&](const char *f, const std::string &v) { mxSetField(s, 0, f, mxCreateString(v.c_str())); };
+    auto r4 = [&](const char *f, const pm::Rect4 &v) { mxSetField(s, 0, f, rect4(v)); };
+    num("confirmedPresentations", d.confirmedPresentations);
+    num("missingPresentedTimes", d.missingPresentedTimes);
+    num("lastTargetErrorMs", d.lastTargetErrorMs);
+    num("lastConfirmDelayMs", d.lastConfirmDelayMs);
+    num("appKitScreenIndex", d.appKitScreenIndex);
+    num("cgDisplayID", d.cgDisplayID);
+    num("renderWidth", d.renderWidth);
+    num("renderHeight", d.renderHeight);
+    num("drawableWidth", d.drawableWidth);
+    num("drawableHeight", d.drawableHeight);
+    num("inFlight", d.inFlight);
+    num("requestedDrawableCount", d.requestedDrawableCount);
+    num("drawableCountReadback", d.drawableCountReadback);
+    text("hostBundleIdentifier", d.hostBundleIdentifier);
+    num("activationPolicyBefore", d.activationPolicyBefore);
+    num("activationPolicyAfter", d.activationPolicyAfter);
+    flag("activationPolicyPromotionAttempted", d.activationPolicyPromotionAttempted);
+    flag("activationPolicyPromotionSucceeded", d.activationPolicyPromotionSucceeded);
+    text("macOSVersion", d.macOSVersion);
+    text("processName", d.processName);
+    num("machTimebaseHz", d.machTimebaseHz);
+    num("machTickNanoseconds", d.machTickNanoseconds);
+    flag("waitForConfirm", d.waitForConfirm);
+    num("measuredRefreshHz", d.measuredRefreshHz);
+    num("gridSamples", d.gridSamples);
+    num("directNoDrawable", d.directNoDrawable);
+    num("directConfirmTimeouts", d.directConfirmTimeouts);
+    num("leadEstimateMs", d.leadEstimateMs);
+    num("pipelineEstimateMs", d.pipelineEstimateMs);
+    num("gpuEstimateMs", d.gpuEstimateMs);
+    flag("displaySyncEnabled", d.displaySyncEnabled);
+    flag("displayCaptured", d.displayCaptured);
+    num("modePointWidth", d.modePointWidth);
+    num("modePixelWidth", d.modePixelWidth);
+    num("largestModePixelWidth", d.largestModePixelWidth);
+    num("shapesAppended", d.shapesAppended);
+    num("shapesEncoded", d.shapesEncoded);
+    num("shapeEncodeCalls", d.shapeEncodeCalls);
+    num("texturesCreated", d.texturesCreated);
+    num("texturesDrawn", d.texturesDrawn);
+    num("textureAllocations", d.textureAllocations);
+    num("textureUpdates", d.textureUpdates);
+    num("lastTextureUploadMs", d.lastTextureUploadMs);
+    r4("lastShapeRect", d.lastShapeRect);
+    r4("lastShapeColor", d.lastShapeColor);
+    num("lastShapeKind", d.lastShapeKind);
+    r4("windowFrame", d.windowFrame);
+    r4("viewBounds", d.viewBounds);
+    r4("layerFrame", d.layerFrame);
+    r4("screenFrame", d.screenFrame);
+    r4("screenVisibleFrame", d.screenVisibleFrame);
+    r4("screenSafeAreaInsets", d.screenSafeAreaInsets);
+    r4("cgDisplayBounds", d.cgDisplayBounds);
+    num("backingScaleFactor", d.backingScaleFactor);
+    num("timingPolicy", d.timingPolicy);
+    num("keyScanMaxMs", d.keyScanMaxMs);
+    num("secureQueryMaxMs", d.secureQueryMaxMs);
+    num("keyScanMeanMs", d.keyScanMeanMs);
+    num("secureQueryMeanMs", d.secureQueryMeanMs);
+    num("keyReadCount", d.keyReadCount);
+    return s;
+}
+
+void warnHook(const char *id, const char *message) { mexWarnMsgIdAndTxt(id, "%s", message); }
+void pinHook() { mexLock(); }
+void unpinHook() { mexUnlock(); }
+void atExit() { pm::shutdown(); }
+
+void dispatch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
+    if (nrhs < 1 || !mxIsChar(prhs[0]) || mxGetNumberOfElements(prhs[0]) >= sizeof(command) ||
+        mxGetString(prhs[0], command, sizeof(command)))
+        fail("A short command string is required.");
+
+    // --- session lifecycle ------------------------------------------------
+    if (is("Version")) {
+        if (nrhs != 1 || nlhs != 1) fail("Version returns one string.");
+        plhs[0] = mxCreateString(pm::version());
+        return;
+    }
+    if (is("PrepareApp")) {
+        if (nrhs != 1 || nlhs != 0) fail("PrepareApp takes no arguments or outputs.");
+        pm::prepareApp();
+        return;
+    }
+    if (is("StartupHistory")) {
+        if (nrhs != 1 || nlhs != 1) fail("StartupHistory returns one matrix.");
+        plhs[0] = startupMatrix(pm::startupHistory());
+        return;
+    }
+    if (is("ConfirmStartup")) {
+        if (nrhs != 1 || nlhs != 1) fail("ConfirmStartup returns the initialization history.");
+        plhs[0] = startupMatrix(pm::confirmStartup());
+        return;
+    }
+    if (is("SettleWindow")) {
+        if (nrhs != 2 || nlhs != 0) fail("SettleWindow requires an open window and duration.");
+        pm::settleWindow(scalar(prhs[1], "settle duration"));
+        return;
+    }
+    if (is("TimingPolicy")) {
+        if (nlhs != 1 || (nrhs != 1 && nrhs != 2))
+            fail("TimingPolicy returns one value and accepts optional 0, 1 or 2.");
+        if (nrhs == 2) pm::setTimingPolicy(unsignedScalar(prhs[1], "timing policy", 2));
+        plhs[0] = mxCreateDoubleScalar(pm::timingPolicy());
+        return;
+    }
+    if (is("Open")) {
+        if ((nrhs < 3 || nrhs > 7) || nlhs != 6)
+            fail("Open needs screenIndex,drawableCount[,waitForConfirm"
+                 "[,displaySync[,captureDisplay]]] "
+                 "and returns width,height,ifi,pointWidth,pointHeight,sessionToken.");
+        pm::OpenOptions o;
+        o.screenIndex = scalar(prhs[1], "screen index");
+        o.drawableCount = unsignedScalar(prhs[2], "maximum drawable count", 3);
+        if (nrhs >= 6) o.captureDisplay = unsignedScalar(prhs[5], "capture display", 1) != 0;
+        if (nrhs >= 5) o.displaySync = unsignedScalar(prhs[4], "display sync", 1) != 0;
+        if (nrhs >= 4) o.waitForConfirm = unsignedScalar(prhs[3], "wait for confirmation", 1) != 0;
+        if (nrhs == 7) o.refreshHz = scalar(prhs[6], "refreshHz");
+        pm::OpenResult r = pm::openSession(o);
+        plhs[0] = mxCreateDoubleScalar(r.pixelWidth);
+        plhs[1] = mxCreateDoubleScalar(r.pixelHeight);
+        plhs[2] = mxCreateDoubleScalar(r.ifi);
+        plhs[3] = mxCreateDoubleScalar(r.pointWidth);
+        plhs[4] = mxCreateDoubleScalar(r.pointHeight);
+        plhs[5] = mxCreateDoubleScalar((double)r.sessionToken);
+        return;
+    }
+    if (is("Close")) {
+        if (nrhs != 1 || nlhs != 0) fail("Close takes no arguments or outputs.");
+        pm::closeSession();
+        return;
+    }
+
+    // --- presentation -----------------------------------------------------
+    if (is("Flip")) {
+        if ((nrhs != 1 && nrhs != 2) || nlhs != 1) fail("Flip accepts an optional target and returns one record.");
+        pm::FlipResult r = pm::flip(nrhs == 2 ? scalar(prhs[1], "target") : 0);
+        plhs[0] = row({r.time, 0, 0, 0, r.confirmed ? 1.0 : 0.0, r.slipRefreshes, r.gridPeriod,
+                       r.queueMs, r.callMs, r.returnTime, (double)r.token});
+        return;
+    }
+    if (is("Queue")) {
+        if ((nrhs != 1 && nrhs != 2) || nlhs != 1) fail("Queue takes an optional presentation time.");
+        std::optional<double> when;
+        if (nrhs == 2) when = scalar(prhs[1], "presentation time");
+        plhs[0] = mxCreateDoubleScalar((double)pm::queueFrame(when));
+        return;
+    }
+    if (is("WaitScheduled")) {
+        if ((nrhs != 2 && nrhs != 3) || nlhs != 1) fail("WaitScheduled needs a token and optional presentation time.");
+        std::optional<double> when;
+        if (nrhs == 3) when = scalar(prhs[2], "presentation time");
+        pm::ScheduleResult r = pm::waitScheduled(unsignedScalar(prhs[1], "frame token", pm::kMaxId), when);
+        plhs[0] = row({r.time, r.scheduled ? 0.0 : 2.0, 0, 0, r.confirmed ? 1.0 : 0.0,
+                       r.slipRefreshes, r.gridPeriod});
+        return;
+    }
+    if (is("PrepareFlip")) {
+        if (nrhs != 1 || nlhs != 1) fail("PrepareFlip takes no arguments and one output.");
+        plhs[0] = mxCreateDoubleScalar((double)pm::prepareFlip());
+        return;
+    }
+    if (is("PresentNow")) {
+        if (nrhs != 1 || nlhs != 1) fail("PresentNow takes no arguments and one output.");
+        pm::PresentResult r = pm::presentNow();
+        plhs[0] = row({r.time, r.callMs});
+        return;
+    }
+    if (is("SetDisplaySync")) {
+        if (nrhs != 2 || nlhs != 0) fail("SetDisplaySync needs one flag and no outputs.");
+        pm::setDisplaySync(unsignedScalar(prhs[1], "display sync", 1) != 0);
+        return;
+    }
+    if (is("PrefetchDrawable")) {
+        if (nrhs != 2 || nlhs != 0) fail("PrefetchDrawable takes one logical argument.");
+        pm::setPrefetchDrawable(unsignedScalar(prhs[1], "prefetch flag", 1) != 0);
+        return;
+    }
+
+    // --- refresh grid -----------------------------------------------------
+    if (is("GridAnchor")) {
+        if (nrhs != 1 || nlhs != 1) fail("GridAnchor takes no arguments and one output.");
+        pm::GridAnchor g = pm::gridAnchor();
+        plhs[0] = row({g.anchor, g.period, g.samples});
+        return;
+    }
+    if (is("NextPhase")) {
+        if (nrhs != 3 || nlhs != 1) fail("NextPhase needs a time, a phase and one output.");
+        double after = scalar(prhs[1], "time");
+        double phase = scalar(prhs[2], "phase");
+        plhs[0] = mxCreateDoubleScalar(pm::nextPhase(after, phase));
+        return;
+    }
+    if (is("NextRefresh")) {
+        if (nrhs != 2 || nlhs != 1) fail("NextRefresh needs one time and one output.");
+        plhs[0] = mxCreateDoubleScalar(pm::nextRefresh(scalar(prhs[1], "time")));
+        return;
+    }
+    if (is("WaitToDraw")) {
+        if (nrhs != 3 || nlhs != 1) fail("WaitToDraw needs a target presentation time and a drawing budget.");
+        double target = scalar(prhs[1], "target presentation time");
+        double budget = scalar(prhs[2], "drawing budget");
+        pm::WaitToDrawResult r = pm::waitToDraw(target, budget);
+        plhs[0] = row({r.wokeAt, r.lead, r.deadline});
+        return;
+    }
+
+    // --- drawing ------------------------------------------------------------
+    if (is("SetBackgroundColor")) {
+        if (nrhs != 5 || nlhs != 0) fail("SetBackgroundColor needs r, g, b and a.");
+        double c[4];
+        for (int a = 1; a <= 4; a++) c[a - 1] = scalar(prhs[a], "background colour component");
+        pm::setBackgroundColor(c[0], c[1], c[2], c[3]);
+        return;
+    }
+    if (is("AddShapes")) {
+        if (nrhs != 6 || nlhs != 0) fail("AddShapes needs kind, param, rect, color and extra arrays.");
+        pm::addShapes(rowView(prhs[1]), rowView(prhs[2]), columnsView(prhs[3]),
+                      columnsView(prhs[4]), columnsView(prhs[5]));
+        return;
+    }
+    if (is("MakeTexture")) {
+        if (nrhs != 2 || nlhs != 1) fail("MakeTexture takes a dense image and returns a handle.");
+        plhs[0] = mxCreateDoubleScalar((double)pm::makeTexture(imageView(prhs[1])));
+        return;
+    }
+    if (is("UpdateTexture")) {
+        if (nrhs != 3 || nlhs != 0) fail("UpdateTexture takes a texture handle and image.");
+        pm::updateTexture(unsignedScalar(prhs[1], "texture handle", pm::kMaxId), imageView(prhs[2]));
+        return;
+    }
+    if (is("DrawTextures")) {
+        if (nrhs != 7 || nlhs != 0)
+            fail("DrawTextures needs handles, srcRects, dstRects, angles, tints and filterModes.");
+        pm::drawTextures(rowView(prhs[1]), columnsView(prhs[2]), columnsView(prhs[3]),
+                         rowView(prhs[4]), columnsView(prhs[5]), rowView(prhs[6]));
+        return;
+    }
+    if (is("CloseTexture")) {
+        if (nrhs != 2 || nlhs != 0) fail("CloseTexture needs a texture handle.");
+        pm::closeTexture(unsignedScalar(prhs[1], "texture handle", pm::kMaxId));
+        return;
+    }
+    if (is("NoiseValues")) {
+        if (nrhs != 8 || nlhs != 1) fail("NoiseValues needs width,height,seed,normal,colour,mean,spread.");
+        pm::NoiseRequest q;
+        q.width = scalar(prhs[1], "width");
+        q.height = scalar(prhs[2], "height");
+        q.seed = scalar(prhs[3], "seed");
+        q.normal = scalar(prhs[4], "normal flag") != 0.0;
+        q.colour = scalar(prhs[5], "colour flag") != 0.0;
+        if (!isRealDouble(prhs[6]) || mxGetNumberOfElements(prhs[6]) != 3)
+            fail("Noise mean must be a 3-element RGB vector.");
+        const double *mean = mxGetPr(prhs[6]);
+        q.mean = {mean[0], mean[1], mean[2]};
+        q.spread = scalar(prhs[7], "spread");
+        pm::checkNoiseRequest(q);
+        mwSize H = (mwSize)q.height, W = (mwSize)q.width;
+        mwSize dims[3] = {H, W, 3};
+        plhs[0] = mxCreateNumericArray(q.colour ? 3 : 2, dims, mxDOUBLE_CLASS, mxREAL);
+        pm::MutableArrayView out;
+        out.data = mxGetPr(plhs[0]);
+        out.ndim = q.colour ? 3 : 2;
+        out.shape = {(size_t)H, (size_t)W, 3};
+        out.strides = {8, (ptrdiff_t)(8 * H), (ptrdiff_t)(8 * H * W)};
+        pm::noiseValues(q, out);
+        return;
+    }
+
+    // --- display modes and cursor --------------------------------------------
+    if (is("Modes")) {
+        if (nrhs != 2 || nlhs != 1) fail("Modes needs a screen index and returns one matrix.");
+        std::vector<pm::DisplayMode> m = pm::modes(scalar(prhs[1], "screen index"));
+        size_t n = m.size();
+        plhs[0] = mxCreateDoubleMatrix(n, 5, mxREAL);
+        double *v = mxGetPr(plhs[0]);
+        for (size_t i = 0; i < n; i++) {
+            v[i] = m[i].pointWidth; v[i + n] = m[i].pointHeight; v[i + 2 * n] = m[i].pixelWidth;
+            v[i + 3 * n] = m[i].pixelHeight; v[i + 4 * n] = m[i].refreshHz;
+        }
+        return;
+    }
+    if (is("SetMode")) {
+        if (nrhs != 4 || nlhs != 1) fail("SetMode needs screenIndex, width and height.");
+        double si = scalar(prhs[1], "screen index");
+        double w = scalar(prhs[2], "width"), h = scalar(prhs[3], "height");
+        pm::setMode(si, w, h);
+        plhs[0] = mxCreateDoubleScalar(1);
+        return;
+    }
+    if (is("Cursor")) {
+        if (nrhs != 2 || nlhs != 0) fail("Cursor takes one logical argument.");
+        pm::setCursorVisible(scalar(prhs[1], "show cursor") != 0.0);
+        return;
+    }
+
+    // --- input ------------------------------------------------------------------
+    if (is("Mouse")) {
+        if (nrhs != 1 || nlhs != 3) fail("Mouse takes no arguments and returns x, y and buttons.");
+        pm::MouseState m = pm::mouse();
+        plhs[0] = mxCreateDoubleScalar(m.x);
+        plhs[1] = mxCreateDoubleScalar(m.y);
+        plhs[2] = mxCreateLogicalMatrix(1, 3);
+        mxLogical *b = mxGetLogicals(plhs[2]);
+        for (size_t i = 0; i < 3; i++) b[i] = m.buttons[i];
+        return;
+    }
+    if (is("Keys")) {
+        if (nrhs != 1 || nlhs != 4) fail("Keys takes no arguments and returns four values.");
+        pm::KeyState k = pm::keys();
+        plhs[0] = mxCreateLogicalScalar(k.anyDown);
+        plhs[1] = mxCreateDoubleScalar(k.secs);
+        plhs[2] = mxCreateLogicalMatrix(1, 256);
+        mxLogical *kv = mxGetLogicals(plhs[2]);
+        for (size_t i = 0; i < 256; i++) kv[i] = k.down[i];
+        plhs[3] = mxCreateDoubleScalar(k.securePid);
+        return;
+    }
+    if (is("KbQueueStatus")) {
+        if (nrhs != 1 || nlhs != 1) fail("KbQueueStatus returns one structure.");
+        pm::KbQueueStatus st = pm::kbQueueStatus();
+        const char *fields[] = {"created", "running", "pollInterval", "lastScanInterval",
+                                "maxScanInterval", "scans", "dropped", "secureInputPID"};
+        plhs[0] = mxCreateStructMatrix(1, 1, 8, fields);
+        const double values[] = {double(st.created), double(st.running), st.pollInterval,
+                                 st.lastScanInterval, st.maxScanInterval, double(st.scans),
+                                 double(st.dropped), st.secureInputPID};
+        for (int i = 0; i < 8; i++) mxSetField(plhs[0], 0, fields[i], mxCreateDoubleScalar(values[i]));
+        return;
+    }
+    if (is("KbQueueCreate")) {
+        if (nrhs != 3 || nlhs != 0 || !isRealDouble(prhs[1]) || mxGetNumberOfElements(prhs[1]) != 256)
+            fail("KbQueueCreate requires a 256-element mask and poll interval, no outputs.");
+        std::array<double, 256> mask;
+        std::memcpy(mask.data(), mxGetPr(prhs[1]), sizeof(double) * 256);
+        pm::kbQueueCreate(mask, scalar(prhs[2], "poll interval"));
+        return;
+    }
+    if (is("KbQueueRelease")) {
+        if (nrhs != 1 || nlhs != 0) fail("KbQueueRelease takes no arguments or outputs.");
+        pm::kbQueueRelease();
+        return;
+    }
+    if (is("KbQueueStart") || is("KbQueueStop") || is("KbQueueFlush")) {
+        if (nrhs != 1 || nlhs != 0) fail("Queue Start/Stop/Flush take no arguments or outputs.");
+        if (is("KbQueueStart")) pm::kbQueueStart();
+        else if (is("KbQueueStop")) pm::kbQueueStop();
+        else pm::kbQueueFlush();
+        return;
+    }
+    if (is("KbQueueGetEvents")) {
+        if (nrhs != 1 || nlhs != 2) fail("KbQueueGetEvents returns events and dropped count.");
+        pm::KbEvents e = pm::kbQueueGetEvents();
+        size_t n = e.events.size();
+        plhs[0] = mxCreateDoubleMatrix(n, 3, mxREAL);
+        double *out = mxGetPr(plhs[0]);
+        for (size_t i = 0; i < n; i++) {
+            out[i] = e.events[i].time; out[i + n] = e.events[i].key; out[i + 2 * n] = e.events[i].pressed ? 1 : 0;
+        }
+        plhs[1] = mxCreateDoubleScalar((double)e.dropped);
+        return;
+    }
+    if (is("KbQueueCheck")) {
+        if (nrhs != 1 || nlhs != 5) fail("KbQueueCheck returns pressed and four timestamp vectors.");
+        pm::KbCheck c = pm::kbQueueCheck();
+        plhs[0] = mxCreateLogicalScalar(c.pressed);
+        const std::array<double, 256> *src[4] = {&c.firstPress, &c.firstRelease, &c.lastPress, &c.lastRelease};
+        for (int j = 0; j < 4; j++) {
+            plhs[j + 1] = mxCreateDoubleMatrix(1, 256, mxREAL);
+            std::memcpy(mxGetPr(plhs[j + 1]), src[j]->data(), sizeof(double) * 256);
+        }
+        return;
+    }
+
+    // --- time and diagnostics ----------------------------------------------------
+    if (is("Wait")) {
+        if (nrhs != 2 || nlhs != 1) fail("Wait needs an absolute deadline and returns the time on return.");
+        plhs[0] = mxCreateDoubleScalar(pm::waitUntil(scalar(prhs[1], "deadline")));
+        return;
+    }
+    if (is("Now")) {
+        if (nrhs != 1 || nlhs != 1) fail("Now takes no arguments and one output.");
+        plhs[0] = mxCreateDoubleScalar(pm::now());
+        return;
+    }
+    if (is("Diagnostic")) {
+        if (nrhs != 1 || nlhs != 2) fail("Diagnostic needs two outputs.");
+        pm::DiagnosticReport r = pm::diagnostic();
+        plhs[0] = historyMatrix(r.history);
+        plhs[1] = diagnosticStruct(r.summary);
+        return;
+    }
+    fail("Unknown command.");
+}
+
+}  // namespace
+
+void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
+    static bool initialized = false;
+    if (!initialized) {
+        pm::HostHooks h;
+        h.warn = warnHook;
+        h.pinModule = pinHook;
+        h.unpinModule = unpinHook;
+        pm::installHostHooks(h);
+        mexAtExit(atExit);
+        initialized = true;
+    }
+    // Copy the error out and raise it after the handler has finished:
+    // mexErrMsgIdAndTxt does not return, and under Octave it longjmps.
+    static char errorId[128], errorText[1024];
+    bool failed = false;
+    try {
+        dispatch(nlhs, plhs, nrhs, prhs);
+    } catch (const pm::Error &e) {
+        snprintf(errorId, sizeof(errorId), "%s", e.id().c_str());
+        snprintf(errorText, sizeof(errorText), "%s", e.what());
+        failed = true;
+    } catch (const std::exception &e) {
+        snprintf(errorId, sizeof(errorId), "%s", pm::kErrNative);
+        snprintf(errorText, sizeof(errorText), "%s", e.what());
+        failed = true;
+    }
+    if (failed)
+        mexErrMsgIdAndTxt(errorId, "%s", errorText);
+}

@@ -16,6 +16,10 @@ Metal timestamps have not been validated with a photodiode. No physical input-to
 
 Add only the version folder to your host path, not its tests/mock subdirectory. Restart Octave/MATLAB before switching native builds after opening graphics.
 
+## In development: 0.5.0
+
+[PsychMetal-0.5.0](PsychMetal-0.5.0/README.md) adds a Python interface (`import psychmetal`) on the same native engine as MATLAB and Octave, and `DrawTextures`. It is unreleased and not yet validated on hardware; build it from source.
+
 ## History and comparisons
 
 The changelog retains 0.4.1's demo/signature fixes, included in the published 0.4.2 package. Historical version folders and [development reports](docs/) remain available; their measurements and implementation descriptions refer to their original versions. Optional Psychtoolbox comparisons are in [comparisons/](PsychMetal-0.4.3/comparisons/).
