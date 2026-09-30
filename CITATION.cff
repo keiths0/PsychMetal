@@ -5,17 +5,20 @@ message: >-
   photodiode; say so if your timing claims depend on it.
 title: "PsychMetal: direct Metal stimulus presentation on Apple silicon"
 abstract: >-
-  A native Metal presentation library with supported Screen-style commands that presents through
-  CAMetalLayer and reports MTLDrawable.presentedTime, with native Metal
-  drawing primitives and no OpenGL. Keeps Screen's argument formats so that
-  existing code ports, and copies none of its implementation.
+  A native Metal presentation library with supported Screen-style commands
+  that presents through CAMetalLayer and reports MTLDrawable.presentedTime,
+  with native Metal drawing primitives and no OpenGL. One engine serves
+  MATLAB, Octave and Python (the psychmetal package on PyPI). Keeps Screen's
+  argument formats so that existing code ports, and copies none of its
+  implementation.
 type: software
 authors:
   - family-names: Schneider
     given-names: Keith
     email: keith@alumni.caltech.edu
-version: 0.4.3
-date-released: "2026-09-17"
+version: 0.5.0
+date-released: "2026-09-30"
+repository-code: "https://github.com/keiths0/PsychMetal"
 license: MIT
 keywords:
   - psychophysics
@@ -23,4 +26,5 @@ keywords:
   - metal
   - macos
   - psychtoolbox
+  - python
   - stimulus-timing

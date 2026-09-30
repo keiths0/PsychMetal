@@ -3,19 +3,23 @@
 *.m         linguist-language=MATLAB
 *.mm        linguist-language=Objective-C++
 
-# fblatency.m is the exception, and the reason the rule above needs one: it is
-# genuinely Objective-C despite the extension, and is compiled with clang.
+# docs/fblatency.m is the exception, and the reason the rule above needs one:
+# it is genuinely Objective-C despite the extension, and is compiled with clang.
 fblatency.m linguist-language=Objective-C
 
-# The mex binaries are checked in on purpose so the package works without a
-# compiler. Marking them binary keeps git from attempting line-ending
+# The MEX and Python binaries are checked in on purpose so the package works
+# without a compiler. Marking them binary keeps git from attempting line-ending
 # conversion or a textual diff on a Mach-O bundle.
 *.mex        binary
 *.mexmaca64  binary
+*.so         binary
 *.o          binary
 
 # Sources are text, with LF endings, on every platform.
 *.m    text eol=lf
 *.mm   text eol=lf
+*.py   text eol=lf
+*.cpp  text eol=lf
+*.h    text eol=lf
 *.md   text eol=lf
 *.txt  text eol=lf

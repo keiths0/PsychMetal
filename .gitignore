@@ -18,8 +18,7 @@
 # was never published at all (its notes were folded into 0.4.0), and 0.3.0 is
 # essentially the flat layout that is already in this repository's first commit,
 # so publishing it as a folder would duplicate history that a tag records
-# better. Nothing here affects the release: `make package` copies only from
-# PsychMetal-0.4.0/, so the zip is the same either way.
+# better.
 #
 # Delete either line to publish that version as a folder.
 PsychMetal-0.3.0/
