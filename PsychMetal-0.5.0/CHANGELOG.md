@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 — unreleased
+## 0.5.0 — 2026-09-30
 
 Python support, through one native engine shared by every host. Includes Octave 11.3.0, MATLAB R2026a and Python 3.14 binaries; the inventory test passes in all three hosts on the tested display, and 0.4.3's timing validation has not yet been repeated. The native interface (`PsychMetalCore`) is internal and was changed without regard to 0.4.3; scripts that call `PsychMetal` keep working.
 
