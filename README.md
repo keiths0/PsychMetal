@@ -9,7 +9,7 @@ Native Metal stimulus presentation for Apple Silicon macOS, with MATLAB, Octave 
 - [Design: one engine, MATLAB/Octave and Python front ends](PsychMetal-0.5.0/DESIGN-0.5.0.md)
 - [Keyboard queue](PsychMetal-0.5.0/KEYBOARD-QUEUE.md)
 
-Version 0.5.0 adds a Python interface (`import psychmetal`) on the same native engine as MATLAB and Octave, with every PsychMetal command, numpy images read without copying, and Python versions of every demo and hardware check. It also adds `DrawTextures`, which draws many textures in one call, as Screen's does. The presentation, timing, texture and input internals are those validated for 0.4.3.
+Version 0.5.0 adds a Python interface (`pip install psychmetal`, once published; `import psychmetal`) on the same native engine as MATLAB and Octave, with every PsychMetal command, numpy images read without copying, and Python versions of every demo and hardware check. It also adds `DrawTextures`, which draws many textures in one call, as Screen's does. The presentation, timing, texture and input internals are those validated for 0.4.3.
 
 Binaries are included for Octave 11.3.0 (Homebrew), MATLAB R2026a and Python 3.14 on Apple silicon; for other versions, rebuild with `make octave`, `make matlab` or `make python`. On the tested 6016×3384, 60 Hz display, the full regression suite passed, and the inventory tests passed in every host: Octave 153/153 and MATLAB 153/153 checks across 50 commands, Python 156/156 across 52. 0.4.3's timing validation has not yet been repeated under 0.5.0. Metal timestamps have not been validated with a photodiode, in any version; no physical input-to-photon accuracy or universal frame-rate guarantee is claimed.
 

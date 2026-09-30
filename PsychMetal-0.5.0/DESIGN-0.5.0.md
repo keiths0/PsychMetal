@@ -97,6 +97,7 @@ The API mirrors PsychMetal.m: each command is a snake_case function with the sam
 - **Colours default to 0–255**, as in MATLAB, with `color_range(w, 1)` for 0–1.
 - **Multi-shape arguments keep MATLAB's orientation** (4xN rects, 2xN dots, 3xN/4xN colours), so ported code stays line-for-line.
 - **The wrapper is thin and cheap.** Scalars are checked in plain Python; arrays are built directly in the (N, 4) layout the engine reads, with one-of-many arguments broadcast as zero-stride views rather than copied. A one-shape `fill_rect` costs about half what it did in the first port.
+- **pip builds it.** `pyproject.toml` describes the package and `setup.py` compiles the three sources into `psychmetal._psychmetal`, adding the `.mm` suffix and ARC for the engine file. `.github/workflows/wheels.yml` at the repository root builds wheels for Python 3.10–3.14 with cibuildwheel and publishes them to PyPI on a version tag, through PyPI's trusted publishing (no stored password).
 - **The extension uses the plain Python C API**: clang and Python's headers are the only build dependencies. Arrays arrive through the buffer protocol with their own strides, never copied; results leave through `numpy.frombuffer`, which the package installs as a factory, so no numpy headers are needed.
 
 ### Threading

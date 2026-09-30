@@ -3,6 +3,8 @@
 # so the package runs without a compiler.
 *.o
 dist/
+build/
+*.egg-info/
 
 # macOS
 .DS_Store

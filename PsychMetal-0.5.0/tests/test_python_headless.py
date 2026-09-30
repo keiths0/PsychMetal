@@ -3,10 +3,13 @@
 Needs a built python/psychmetal/_psychmetal*.so (make python); skips otherwise."""
 from pathlib import Path
 import sys
+import sysconfig
 
 root = Path(__file__).resolve().parents[1]
-if not list((root / 'python' / 'psychmetal').glob('_psychmetal*')):
-    print('Python extension not built (make python): headless Python check SKIPPED.')
+# Only an extension built for this Python on this machine can load.
+if not (root / 'python' / 'psychmetal' / ('_psychmetal' + sysconfig.get_config_var('EXT_SUFFIX'))).exists():
+    print(f'No Python extension for this Python ({sysconfig.get_config_var("EXT_SUFFIX")}; make python): '
+          'headless Python check SKIPPED.')
     sys.exit(0)
 sys.path.insert(0, str(root / 'python'))
 import numpy as np

@@ -17,14 +17,16 @@ def run(args, skip=False):
 octave=shutil.which('octave')
 # MATLAB/Octave wrapper against its .m mock, then headless against the real
 # PsychMetalCore built in this folder (make octave).
-tests=['test_wrapper']+(['test_headless'] if (root/'PsychMetalCore.mex').exists() else [])
+# The committed binaries are for macOS: only a Mac can load them.
+mac=sys.platform=='darwin'
+tests=['test_wrapper']+(['test_headless'] if mac and (root/'PsychMetalCore.mex').exists() else [])
 for test in tests if octave else []:
     # Run outside the package directory so the explicit mock path can take precedence.
     expression="addpath('%s'); %s('%s');" % (str(root/'tests').replace("'","''"),test,str(root).replace("'","''"))
     result=subprocess.run(['octave','--no-gui','--quiet','--eval',expression],cwd=tempfile.gettempdir())
     if result.returncode: raise SystemExit(result.returncode)
 if not octave: print('Octave not found: MATLAB wrapper tests SKIPPED.')
-elif 'test_headless' not in tests: print('PsychMetalCore.mex not built (make octave): real-MEX headless test SKIPPED.')
+elif 'test_headless' not in tests: print('No PsychMetalCore.mex for this machine (make octave on a Mac): real-MEX headless test SKIPPED.')
 # Engine internals, boundary and parity, both front ends against the scripted
 # engine, and the real Python extension headless.
 for test in ['test_engine_header.py','test_typecheck.py','test_mouse_dispatch.py','test_native_dispatch.py',

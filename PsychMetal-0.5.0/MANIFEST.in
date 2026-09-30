@@ -1,0 +1,6 @@
+# The source distribution: what pip needs to build the extension, and nothing
+# else. The prebuilt binaries in the repository are left out; pip builds its own.
+include PsychMetalEngine.h PsychMetalInternal.h PsychMetalKeyboardQueue.h PsychMetalShaders.h
+include python/README.md
+global-exclude *.so *.mex *.mexmaca64 *.o
+prune tests

@@ -69,7 +69,7 @@ _core.set_array_factory(_array)
 _atexit.register(_core.shutdown)
 
 if _core.version() != __version__:
-    raise ImportError(f'psychmetal {__version__} found engine {_core.version()}; rebuild with make python.')
+    raise ImportError(f'psychmetal {__version__} found engine {_core.version()}; reinstall psychmetal, or rebuild it with make python.')
 
 # The open window's state, as PsychMetal.m's persistent S.
 _S = None

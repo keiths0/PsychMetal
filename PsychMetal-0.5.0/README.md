@@ -31,7 +31,7 @@ make python PYTHON=/path/to/python3                  # for a particular Python
 make test
 ```
 
-The included Python extension is for Python 3.14; any other Python needs `make python`, run with that Python. The extension needs only clang and that Python's headers; numpy is needed at run time. The Python must be an arm64 build.
+The included Python extension is for Python 3.14; any other Python needs `make python`, run with that Python, or the pip install below. The extension needs only clang and that Python's headers; numpy is needed at run time. The Python must be an arm64 build.
 
 ## MATLAB and Octave
 
@@ -47,8 +47,14 @@ Adjust the path if installed elsewhere. Add only this folder, **not genpath**: t
 
 ## Python
 
+```bash
+pip install psychmetal                   # from PyPI, once published
+pip install ./PsychMetal-0.5.0           # or from a clone of this repository
+```
+
+pip builds the extension for whichever Python runs it, with Apple's clang. Alternatively, put this folder's `python/` on `PYTHONPATH` and use the included Python 3.14 extension, or `make python`.
+
 ```python
-import sys; sys.path.insert(0, '/Users/you/Desktop/PsychMetal/PsychMetal-0.5.0/python')
 import psychmetal as pm
 
 w, rect, ifi = pm.open_window(0, [0, 0, 0])
