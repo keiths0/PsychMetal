@@ -14,7 +14,7 @@ Native Metal stimulus presentation for Apple silicon, for MATLAB, Octave and Pyt
 
 Binaries are included for Octave 11.3.0 (Homebrew), MATLAB R2026a and Python 3.14 on Apple silicon. Rebuild for other versions with `make octave`, `make matlab` or `make python`, or `pip install psychmetal`. Restart Octave or MATLAB before switching native builds after opening a graphics window.
 
-On the tested 6016×3384, 60 Hz display, the readback test (15/15), the hardware test and the inventory test passed in every host: Python 3.14 (169/169 checks across 53 commands), Octave 11.3.0 and MATLAB R2026a (166/166 across 51 each), with identical readback figures in all three. A pip build of 0.5.1 has not been tested.
+On the tested 6016×3384, 60 Hz display, the readback test (15/15), the hardware test and the inventory test passed in every host: Python 3.14 (169/169 checks across 53 commands), Octave 11.3.0 and MATLAB R2026a (166/166 across 51 each), with identical readback figures in all three. The 0.5.1 wheel installed from PyPI also passed the Python inventory test (169/169), under Python 3.14.
 
 Timing rests on Metal presentation reports. 0.4.3's timing validation has not been repeated since, and no version has been validated with a photodiode; no physical input-to-photon accuracy or universal frame-rate guarantee is claimed.
 

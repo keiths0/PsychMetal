@@ -88,7 +88,7 @@ pip install psychmetal                   # from PyPI
 pip install ./PsychMetal-0.5.1           # or from a clone of this repository
 ```
 
-Homebrew's Python refuses packages installed outside a virtual environment, hence the first two lines. pip builds the extension for whichever Python runs it, with Apple's clang. Under 0.5.0 the pip-built package passed the full Python inventory test on the tested display; a pip build of 0.5.1 has not been tested. Alternatively, put this folder's `python/` on `PYTHONPATH` and use the included Python 3.14 extension, or `make python`.
+Homebrew's Python refuses packages installed outside a virtual environment, hence the first two lines. pip builds the extension for whichever Python runs it, with Apple's clang. The 0.5.1 wheel installed from PyPI passed the full Python inventory test (169/169) on the tested display, under Python 3.14. Alternatively, put this folder's `python/` on `PYTHONPATH` and use the included Python 3.14 extension, or `make python`.
 
 ```python
 import psychmetal as pm
