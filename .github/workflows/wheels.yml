@@ -2,14 +2,14 @@ name: Wheels
 
 # Builds psychmetal wheels for every supported Python on Apple silicon, plus a
 # source distribution. A manual run (Actions tab -> Wheels -> Run workflow) only
-# builds, to check; pushing a tag such as v0.5.1 also publishes to PyPI.
+# builds, to check; pushing a tag such as v0.6.0 also publishes to PyPI.
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
 
 env:
-  PACKAGE_DIR: PsychMetal-0.5.1
+  PACKAGE_DIR: PsychMetal-0.6.0
 
 jobs:
   wheels:
