@@ -1,0 +1,17 @@
+# Build intermediates. The binaries themselves (PsychMetalCore.mex,
+# PsychMetalCore.mexmaca64, python/psychmetal/_psychmetal*.so) are committed,
+# so the package runs without a compiler.
+*.o
+dist/
+build/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Measurement output from the tests and hardware checks
+*.csv
+*.mat
+PsychMetalMotion-*
+PsychMetalOpenReady-*
+__pycache__/
