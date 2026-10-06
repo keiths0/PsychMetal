@@ -258,6 +258,23 @@ def _shapes(kind, param, rects, colors, extra=None):
 # Window
 # ----------------------------------------------------------------------------
 
+class _Opened(tuple):
+    """What open_window returns: the tuple (w, rect, ifi), and a context manager
+    that closes that window and shows the cursor when its block ends."""
+    __slots__ = ()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, trace):
+        try:
+            if _S is not None and _S['buffer'] == self[0]:
+                close(self[0])
+        finally:
+            show_cursor()
+        return False
+
+
 def open_window(screen=None, color=None, drawable_count=None, wait_for_confirm=None,
                 display_sync=None, capture_display=None, refresh_hz=None, readback=None, bit_depth=None):
     """w, rect, ifi = open_window([screen, background, drawable_count, wait_for_confirm,
@@ -267,6 +284,12 @@ def open_window(screen=None, color=None, drawable_count=None, wait_for_confirm=N
     readback=True makes frames readable by get_image. It is a diagnostic mode:
     every frame is copied, so take no timing from it. bit_depth=10 asks for ten
     bits per channel in the frame handed to the display; the default is 8.
+
+    As the subject of a with statement the window is closed, and the cursor
+    shown, when the block ends, whether it finishes, raises or is interrupted:
+
+        with pm.open_window(0, [0, 0, 0]) as (w, rect, ifi):
+            ...
     """
     global _S
     _check(_S is None, 'PsychMetal is already open. Close the existing window first.')
@@ -325,7 +348,7 @@ def open_window(screen=None, color=None, drawable_count=None, wait_for_confirm=N
               last_slip_flip=float('nan'), last_slip_refreshes=0.0)
     if count == 3:
         _core.set_prefetch_drawable(True)
-    return token, display_rect, ifi
+    return _Opened((token, display_rect, ifi))
 
 
 def close(w):

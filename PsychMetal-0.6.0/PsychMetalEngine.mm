@@ -130,9 +130,10 @@ static std::vector<PMTextureRef> texturePools[PM_MAX_TEXTURES];
 static PMTextureRef drawTextureRefs[PM_MAX_SHAPES];
 // Coverage masks rendered on the CPU and kept: lines of text by font, size and
 // string, and polygons by their points. ascent is for text.
-struct PMMask { PMTextureRef mask; double width, height, ascent; };
+struct PMMask { PMTextureRef mask; double width, height, ascent; uint64_t used; };
 static std::map<std::string, PMMask> maskCache;
 static size_t maskCacheBytes;
+static uint64_t maskUses;          // counts uses: a mask's `used` is when it was last wanted
 static PMMask unkeptMask;          // a mask too large to keep, alive until the next one
 // The offscreen window that drawing goes into, or none: the window. Only the
 // current target has draws waiting: they are the draw-list items from targetBase
@@ -1077,6 +1078,7 @@ static void closeCore(void) {
     shaderLibrary = nil;
     maskCache.clear();
     maskCacheBytes = 0;
+    maskUses = 0;
     unkeptMask = PMMask{};
     std::vector<__fp16>().swap(uploadScratch);
     std::vector<uint8_t>().swap(byteScratch);
@@ -2671,18 +2673,36 @@ static PMTextureRef makeMaskTexture(const std::vector<uint8_t> &coverage, size_t
         return mask;
     }
 }
-// Keep a mask for the next time it is drawn. The cache is emptied when it holds
-// 256 masks or 256 MB; queued draws hold their own references. A mask over 64 MB
-// is not kept.
+// The masks kept: at most 256 of them and 256 MB. When a new one does not fit,
+// the ones wanted longest ago go first, so text that is drawn on every frame
+// stays while text that changes passes through. Queued draws hold their own
+// references. A mask over 64 MB is not kept.
+#define PM_MASK_COUNT 256
+#define PM_MASK_BYTES ((size_t)256 << 20)
+#define PM_MASK_LARGEST ((size_t)64 << 20)
+// A kept mask, marked as wanted now; or none.
+static PMMask *findMask(const std::string &key) {
+    auto found = maskCache.find(key);
+    if (found == maskCache.end()) return nullptr;
+    found->second.used = ++maskUses;
+    return &found->second;
+}
+// Keep a mask that was just made, for the next time it is wanted.
 static const PMMask &keepMask(const std::string &key, const PMMask &made) {
     size_t bytes = made.mask->width * made.mask->height;
-    if (bytes > ((size_t)64 << 20)) { unkeptMask = made; return unkeptMask; }
-    if (maskCache.size() >= 256 || maskCacheBytes + bytes > ((size_t)256 << 20)) {
-        maskCache.clear();
-        maskCacheBytes = 0;
+    if (bytes > PM_MASK_LARGEST) { unkeptMask = made; return unkeptMask; }
+    while (!maskCache.empty() && (maskCache.size() >= PM_MASK_COUNT || maskCacheBytes + bytes > PM_MASK_BYTES)) {
+        auto oldest = maskCache.begin();
+        for (auto it = maskCache.begin(); it != maskCache.end(); ++it)
+            if (it->second.used < oldest->second.used) oldest = it;
+        maskCacheBytes -= oldest->second.mask->width * oldest->second.mask->height;
+        maskCache.erase(oldest);
     }
     maskCacheBytes += bytes;
-    return maskCache.emplace(key, made).first->second;
+    PMMask &kept = maskCache[key];
+    kept = made;
+    kept.used = ++maskUses;
+    return kept;
 }
 // Queue a mask with its top left at a whole pixel, in a colour.
 static void queueMask(const PMMask &made, double left, double top, const pm::Rect4 &rgba) {
@@ -2703,17 +2723,19 @@ static void queueMask(const PMMask &made, double left, double top, const pm::Rec
     pthread_mutex_unlock(&lock);
 }
 
-// One line, rendered by CoreText into an 8-bit coverage mask, kept in an R8 texture.
-static const PMMask &textFor(const std::string &utf8, const std::string &fontName, double size) {
+// One line of text as CoreText lays it out, and the mask that will hold it: one
+// pixel of margin all round, for antialiased edges, and the baseline on a pixel
+// boundary, so horizontal strokes stay sharp. The caller releases the line.
+struct PMTextLine { CTLineRef line; double wide, high, above, below; };
+static std::string textKey(const std::string &utf8, const std::string &fontName, double size) {
     if (!device || closing) fail("PsychMetal is not open.");
     if (!(size >= 4 && size <= 2048)) fail("Text size must be 4 to 2048 pixels.");
     if (utf8.empty()) fail("Text must not be empty.");
     char sizeKey[32];
     snprintf(sizeKey, sizeof(sizeKey), "%.3f", size);
-    std::string key = "text\n" + fontName + '\n' + sizeKey + '\n' + utf8;
-    auto found = maskCache.find(key);
-    if (found != maskCache.end())
-        return found->second;
+    return "text\n" + fontName + '\n' + sizeKey + '\n' + utf8;
+}
+static PMTextLine layoutText(const std::string &utf8, const std::string &fontName, double size) {
     CFStringRef string = CFStringCreateWithCString(NULL, utf8.c_str(), kCFStringEncodingUTF8);
     if (!string) fail("Text must be valid UTF-8.");
     CFStringRef name = CFStringCreateWithCString(NULL, fontName.empty() ? "Helvetica" : fontName.c_str(),
@@ -2734,32 +2756,44 @@ static const PMMask &textFor(const std::string &utf8, const std::string &fontNam
     if (!line) fail("Could not lay out the text.");
     CGFloat ascent = 0, descent = 0, leading = 0;
     double advance = CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
-    // One pixel of margin all round, for antialiased edges.
-    // The baseline is on a pixel boundary, so horizontal strokes stay sharp.
-    double above = ceil(ascent), below = ceil(descent);
-    double wide = ceil(advance) + 2, high = above + below + 2;
-    if (!(wide >= 1 && wide <= 16384 && high >= 1 && high <= 16384)) {
+    PMTextLine laid = {line, ceil(advance) + 2, 0, ceil(ascent), ceil(descent)};
+    laid.high = laid.above + laid.below + 2;
+    if (!(laid.wide >= 1 && laid.wide <= 16384 && laid.high >= 1 && laid.high <= 16384)) {
         CFRelease(line);
         fail("The text is too large to draw: 16384 pixels at most.");
     }
-    size_t w = (size_t)wide, h = (size_t)high;
+    return laid;
+}
+// One line, rendered by CoreText into an 8-bit coverage mask, kept in an R8 texture.
+static const PMMask &textFor(const std::string &utf8, const std::string &fontName, double size) {
+    std::string key = textKey(utf8, fontName, size);
+    if (const PMMask *kept = findMask(key))
+        return *kept;
+    PMTextLine laid = layoutText(utf8, fontName, size);
+    size_t w = (size_t)laid.wide, h = (size_t)laid.high;
     std::vector<uint8_t> coverage(w * h, 0);
     CGContextRef context = CGBitmapContextCreate(coverage.data(), w, h, 8, w, NULL, kCGImageAlphaOnly);
-    if (!context) { CFRelease(line); fail("Could not create the text bitmap."); }
+    if (!context) { CFRelease(laid.line); fail("Could not create the text bitmap."); }
     // The context's origin is its bottom left; its first row in memory is its top.
-    CGContextSetTextPosition(context, 1, 1 + below);
-    CTLineDraw(line, context);
+    CGContextSetTextPosition(context, 1, 1 + laid.below);
+    CTLineDraw(laid.line, context);
     CGContextRelease(context);
-    CFRelease(line);
+    CFRelease(laid.line);
     PMMask text{};
     text.mask = makeMaskTexture(coverage, w, h);
-    text.width = wide; text.height = high; text.ascent = above + 1;
+    text.width = laid.wide; text.height = laid.high; text.ascent = laid.above + 1;
     return keepMask(key, text);
 }
 
+// Measuring makes no mask: a line that has been drawn is known by the mask kept
+// for it, and any other is only laid out. Wrapping a paragraph measures every
+// word of it, and none of those is ever drawn alone.
 pm::TextBounds pm::textBounds(const std::string &utf8, const std::string &font, double size) {
-    const PMMask &text = textFor(utf8, font, size);
-    return {text.width, text.height, text.ascent};
+    if (const PMMask *kept = findMask(textKey(utf8, font, size)))
+        return {kept->width, kept->height, kept->ascent};
+    PMTextLine laid = layoutText(utf8, font, size);
+    CFRelease(laid.line);
+    return {laid.wide, laid.high, laid.above + 1};
 }
 
 pm::TextBounds pm::drawText(const std::string &utf8, const std::string &font, double size, double x, double y,
@@ -2812,9 +2846,8 @@ void pm::drawPolygon(const pm::ArrayView &points, const pm::Rect4 &rgba, double 
     std::string key = "polygon\n";
     key.append((const char *)&pen, sizeof(pen));
     key.append((const char *)local.data(), local.size() * sizeof(double));
-    auto found = maskCache.find(key);
-    if (found != maskCache.end()) {
-        queueMask(found->second, left, top, rgba);
+    if (const PMMask *kept = findMask(key)) {
+        queueMask(*kept, left, top, rgba);
         return;
     }
     size_t w = (size_t)wide, h = (size_t)high;

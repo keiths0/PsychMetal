@@ -138,23 +138,25 @@ void pm::noiseValues(const pm::NoiseRequest &q, const pm::MutableArrayView &out)
     if (!out.data || out.ndim != (q.colour ? 3 : 2) || out.shape[0] != H || out.shape[1] != W ||
         (q.colour && out.shape[2] != 3))
         fail("Noise output buffer does not match the request.");
-    uint32_t seed = (uint32_t)q.seed;
-    unsigned char *base = (unsigned char *)out.data;
-    const ptrdiff_t sc = out.ndim == 3 ? out.strides[2] : 0;
-    auto at = [&](size_t y, size_t x, size_t c) -> double & {
-        return *(double *)(base + (ptrdiff_t)y * out.strides[0] + (ptrdiff_t)x * out.strides[1] + (ptrdiff_t)c * sc);
-    };
-    for (size_t ix = 0; ix < W; ix++) {
-        for (size_t iy = 0; iy < H; iy++) {
-            uint32_t b = noiseBase(seed, (uint32_t)ix, (uint32_t)iy);
-            if (q.colour) {
-                for (uint32_t c = 0; c < 3; c++) {
-                    double v = q.mean[c] + q.spread * noiseDeviate(b, c, q.normal);
-                    at(iy, ix, c) = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
-                }
-            } else {
-                double v = q.mean[0] + q.spread * noiseDeviate(b, 0, q.normal);
-                at(iy, ix, 0) = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+    const uint32_t seed = (uint32_t)q.seed;
+    const double spread = q.spread, mean[3] = {q.mean[0], q.mean[1], q.mean[2]};
+    const bool normal = q.normal;
+    const size_t channels = q.colour ? 3 : 1;
+    const ptrdiff_t sc = q.colour ? out.strides[2] : 0;
+    // A pixel's value depends only on the seed and where it is, so the order of
+    // visiting is free: the inner loop runs along whichever of rows and columns
+    // is closer together in the caller's memory (columns for MATLAB's layout,
+    // rows for numpy's), so that the writes are sequential.
+    const bool alongRows = std::abs(out.strides[1]) < std::abs(out.strides[0]);
+    const size_t outerCount = alongRows ? H : W, innerCount = alongRows ? W : H;
+    const ptrdiff_t outerStride = out.strides[alongRows ? 0 : 1], innerStride = out.strides[alongRows ? 1 : 0];
+    for (size_t o = 0; o < outerCount; o++) {
+        unsigned char *p = (unsigned char *)out.data + (ptrdiff_t)o * outerStride;
+        for (size_t i = 0; i < innerCount; i++, p += innerStride) {
+            const uint32_t b = alongRows ? noiseBase(seed, (uint32_t)i, (uint32_t)o) : noiseBase(seed, (uint32_t)o, (uint32_t)i);
+            for (size_t c = 0; c < channels; c++) {
+                double v = mean[c] + spread * noiseDeviate(b, (uint32_t)c, normal);
+                *(double *)(p + (ptrdiff_t)c * sc) = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
             }
         }
     }

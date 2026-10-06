@@ -15,13 +15,10 @@ Requires macOS 14 or later on Apple silicon, an arm64 Python 3.10 or later, and 
 ```python
 import psychmetal as pm
 
-w, rect, ifi = pm.open_window(0, [0, 0, 0])
-try:
+with pm.open_window(0, [0, 0, 0]) as (w, rect, ifi):
     pm.fill_rect(w, [255, 0, 0], [100, 100, 300, 300])
     vbl, onset, flip_return, missed, slipped = pm.flip(w)
     pm.wait_secs(1)
-finally:
-    pm.close(w)
 ```
 
 Each PsychMetal command is a function with the snake_case name and the same arguments, order and defaults as in MATLAB; MATLAB's `[]` is `None`. Colours run 0–255 by default. Key indices are 0-based (`kb_name('ESCAPE')` is 40). Several rectangles, dot positions and per-item colours keep MATLAB's 4xN, 2xN and 3xN/4xN orientation, and images are numpy arrays (H, W[, C]) in any memory layout, read without copying. `help(psychmetal)` covers threading, batching and the other details.

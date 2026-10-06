@@ -388,7 +388,10 @@ void setGammaTable(const ArrayView &table);
 
 // 'TextBounds' / 'DrawText'. One line of UTF-8 text in the named font (empty:
 // Helvetica) at `size` pixels. drawText queues it with its top left at (x, y) in
-// pixels and colour rgba 0..1, drawn in order with shapes and textures.
+// pixels and colour rgba 0..1, drawn in order with shapes and textures. A line
+// is rendered the first time it is drawn and its rendering kept, with those of
+// polygons: 256 of them or 256 MB, the ones wanted longest ago making way.
+// textBounds renders nothing.
 struct TextBounds { double width, height, ascent; };   // pixels
 TextBounds textBounds(const std::string &utf8, const std::string &font, double size);
 TextBounds drawText(const std::string &utf8, const std::string &font, double size, double x, double y,

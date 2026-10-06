@@ -677,6 +677,14 @@ assert(large(3) > 1.8 * small(3) && large(4) > 1.8 * small(4) - 4, 'Text at twic
     mat2str(large), mat2str(small));
 longer = inventoryPM('TextBounds', w, 'PsychMetal PsychMetal', 48);
 assert(longer(3) > small(3), 'A longer line is not wider.');
+% A line is measured without being rendered; what it measures must be what it
+% then draws as, and what it measures again once its rendering is kept.
+line = 'Measured, then drawn';
+[before, rise] = inventoryPM('TextBounds', w, line, 48);
+drawn = inventoryPM('DrawText', w, line, 0, 0, 255, 48);
+[after, riseAfter] = inventoryPM('TextBounds', w, line, 48);
+assert(isequal(before, drawn) && isequal(before, after) && rise == riseAfter, ...
+    'A line measured %s, drew as %s and then measured %s.', mat2str(before), mat2str(drawn), mat2str(after));
 end
 
 function assertCentred(where, rect)

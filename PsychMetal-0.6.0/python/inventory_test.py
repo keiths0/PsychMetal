@@ -526,6 +526,13 @@ def assert_text_bounds(ipm, w):
         raise AssertionError(f'text at twice the size measured {large} against {small}')
     if ipm.text_bounds(w, 'PsychMetal PsychMetal', 48)[0][2] <= small[2]:
         raise AssertionError('a longer line is not wider')
+    # A line is measured without being rendered; what it measures must be what it
+    # then draws as, and what it measures again once its rendering is kept.
+    line = 'Measured, then drawn'
+    (before, rise), (drawn, _), (after, rise_after) = (ipm.text_bounds(w, line, 48), ipm.draw_text(w, line, 0, 0, 255, 48),
+                                                       ipm.text_bounds(w, line, 48))
+    if not (list(before) == list(drawn) == list(after) and rise == rise_after):
+        raise AssertionError(f'a line measured {list(before)}, drew as {list(drawn)} and then measured {list(after)}')
 
 
 def assert_centred(where, rect):

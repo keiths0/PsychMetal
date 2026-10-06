@@ -319,6 +319,30 @@ try:
 finally:
     del os.environ['PM_MOCK_DROP']
 raises(pm.flip, w, message='PsychMetal is not open.')
+
+# --- open_window as the subject of a with statement ---------------------------------------------
+opened = pm.open_window(0)
+check(isinstance(opened, tuple) and len(opened) == 3 and opened[2] > 0, 'open_window still returns the tuple (w, rect, ifi)')
+pm.close(opened[0])
+with pm.open_window(0) as (wc, rc, ic):
+    pm.fill_rect(wc, 255)
+    pm.flip(wc)
+    check(rc[2] == 800 and ic > 0, 'with open_window(...) as (w, rect, ifi) gives the same three')
+raises(pm.flip, wc, message='PsychMetal is not open.')
+try:
+    with pm.open_window(0) as (wc, _, _):
+        raise RuntimeError('stopped')
+except RuntimeError as stopped:
+    check(str(stopped) == 'stopped', 'an error inside the block is passed on')
+raises(pm.flip, wc, message='PsychMetal is not open.')
+with pm.open_window(0) as (wc, _, _):
+    pm.close(wc)                                    # closed by hand inside the block: leaving it is then quiet
+with pm.open_window(0) as (first, _, _):
+    pass
+second, _, _ = pm.open_window(0)                    # a later window is not closed by an earlier block's tuple
+opened.__exit__(None, None, None)
+check(pm.rect(second)[2] == 800, 'leaving a block closes only the window it opened')
+pm.close(second)
 m = pm.resolutions(0)
 check(len(m) == 2 and m[0]['width'] == 800, 'resolutions lists modes as dicts')
 check(pm.resolution(0, 1024, 768)['width'] == 800, 'resolution sets and returns the old mode')
