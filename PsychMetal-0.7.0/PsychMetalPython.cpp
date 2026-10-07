@@ -57,12 +57,21 @@ void flushWarnings() {
 // are carried back across the GIL boundary and rethrown with it held.
 template <class F> void engine(F &&fn) {
     std::exception_ptr error;
+    bool busy = false;
     Py_BEGIN_ALLOW_THREADS
     {
-        std::lock_guard<std::mutex> guard(engineMutex);
-        try { fn(); } catch (...) { error = std::current_exception(); }
+        // The main thread never waits for the engine: the call that holds it on
+        // another thread may itself be waiting for the main thread.
+        std::unique_lock<std::mutex> guard(engineMutex, std::defer_lock);
+        if (!pm::onMainThread()) guard.lock();
+        else busy = !guard.try_lock();
+        if (!busy)
+            try { fn(); } catch (...) { error = std::current_exception(); }
     }
     Py_END_ALLOW_THREADS
+    if (busy)
+        throw pm::Error("PsychMetal is in use on another thread, and the main thread cannot wait "
+                        "for it. Call it from the experiment's thread.");
     flushWarnings();
     if (error) std::rethrow_exception(error);
 }
@@ -744,6 +753,18 @@ PyObject *py_queue_cancel(PyObject *, PyObject *) {
     });
 }
 
+PyObject *py_touch_events(PyObject *, PyObject *) {
+    return guarded([&]() -> PyObject * {
+        pm::TouchEvents e{};
+        engine([&] { e = pm::touchEvents(); });
+        std::vector<double> v;
+        v.reserve(e.events.size() * 5);
+        for (auto &x : e.events) v.insert(v.end(), {x.time, (double)x.finger, (double)x.phase, x.x, x.y});
+        PyObject *events = doubles(v, e.events.size(), 5);
+        return Py_BuildValue("(NK)", events, (unsigned long long)e.dropped);
+    });
+}
+
 PyObject *py_mouse_events(PyObject *, PyObject *) {
     return guarded([&]() -> PyObject * {
         pm::MouseEvents e{};
@@ -1009,6 +1030,7 @@ PyMethodDef methods[] = {
     PM_METHOD(set_cursor_visible, METH_VARARGS, "set_cursor_visible(flag)."),
     PM_METHOD(mouse, METH_NOARGS, "mouse() -> (x, y, (left, right, centre))."),
     PM_METHOD(mouse_events, METH_NOARGS, "mouse_events() -> ((n, 5) float64: time, button, pressed, x, y; dropped)."),
+    PM_METHOD(touch_events, METH_NOARGS, "touch_events() -> ((n, 5) float64: time, finger, phase, x, y; dropped)."),
     PM_METHOD(set_mouse, METH_VARARGS, "set_mouse(x, y): move the cursor, in window pixels."),
     PM_METHOD(keys, METH_NOARGS, "keys() -> (any_down, secs, key_code bool[256], secure_pid)."),
     PM_METHOD(kb_queue_status, METH_NOARGS, "Keyboard queue status dict."),

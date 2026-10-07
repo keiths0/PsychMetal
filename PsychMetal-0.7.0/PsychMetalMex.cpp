@@ -622,6 +622,19 @@ void dispatch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
         plhs[1] = mxCreateDoubleScalar((double)e.dropped);
         return;
     }
+    if (is("TouchEvents")) {
+        if (nrhs != 1 || nlhs != 2) fail("TouchEvents returns events and dropped count.");
+        pm::TouchEvents e = pm::touchEvents();
+        size_t n = e.events.size();
+        plhs[0] = mxCreateDoubleMatrix(n, 5, mxREAL);
+        double *out = mxGetPr(plhs[0]);
+        for (size_t i = 0; i < n; i++) {
+            out[i] = e.events[i].time; out[i + n] = e.events[i].finger; out[i + 2 * n] = e.events[i].phase;
+            out[i + 3 * n] = e.events[i].x; out[i + 4 * n] = e.events[i].y;
+        }
+        plhs[1] = mxCreateDoubleScalar((double)e.dropped);
+        return;
+    }
     if (is("Mouse")) {
         if (nrhs != 1 || nlhs != 3) fail("Mouse takes no arguments and returns x, y and buttons.");
         pm::MouseState m = pm::mouse();

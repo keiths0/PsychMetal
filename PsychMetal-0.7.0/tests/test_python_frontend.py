@@ -632,6 +632,37 @@ try:
     events, dropped = pm.mouse_events(wm)
     check(events.shape == (1, 5) and events[0].tolist() == [times[2], 1, 1, 400, 300], 'a press is reported with its own time and place')
     check(pm.mouse_events(wm)[0].shape == (0, 5), 'and once')
+    touches, lost = pm.touch_events(wm)
+    check(touches.shape == (3, 5) and lost == 0 and touches[:, 1].tolist() == [1, 1, 1] and
+          touches[:, 2].tolist() == [0, 1, 2] and touches[0, 0] == times[2] and
+          touches[:, 3].tolist() == [400, 405, 410] and touches[:, 4].tolist() == [300, 300, 300],
+          'a finger going down, moving and lifting is reported with its times and places')
+    check(pm.touch_events(wm)[0].shape == (0, 5), 'and once')
+    ended = []
+    worker = pm.start(lambda: [pm.flip(wm) for _ in range(1000)], done=lambda result, error: ended.append(error))
+    pm.stop()
+    worker.join()
+    check(len(ended) == 1 and isinstance(ended[0], KeyboardInterrupt), 'stop ends a started experiment at its next frame')
+    pm.start(lambda: None).join()
+    check(np.isfinite(pm.flip(wm)[0]), 'and the next start clears the stop')
+    busy = []
+    worker = pm.start(lambda: [pm.flip(wm) for _ in range(30)])
+    while worker.is_alive() and not busy:
+        try:
+            pm.flip(wm)
+        except pm.PsychMetalError as e:
+            busy.append(str(e))
+    worker.join()
+    check(busy and busy[0].startswith('PsychMetal is in use on another thread'),
+          'the main thread is refused, not left waiting, while a started experiment is in the engine')
+    pm.close(wm)
+    gate = threading.Event()
+    worker = pm.start(lambda: (pm.open_window(0), gate.wait()))
+    raises(pm.start, lambda: None, message='An experiment is already running: wait for it to end.')
+    gate.set()
+    worker.join()
+    raises(pm.flip, wm, message='PsychMetal is not open.')
+    wm, _, _ = pm.open_window(0)
     pm.close(wm)
 finally:
     del os.environ['PM_MOCK_MOUSE']

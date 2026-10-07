@@ -35,6 +35,7 @@ case 'queueflip',varargout={[7 1 13]};
 case 'queueresults',varargout={[varargin{1} 2 0 7]};
 case 'queuecancel',varargout={2};
 case 'mouseevents',varargout={[1.5 1 1 10 20],0};
+case 'touchevents',varargout={[2.5 1 0 30 40],0};
 case {'prepareapp','setbackgroundcolor','prefetchdrawable','close','closetexture','updatetexture','addshapes','drawtextures','kbqueuecreate'}
 otherwise,error('Unexpected native call %s',cmd);
 end

@@ -29,7 +29,7 @@ if not octave: print('Octave not found: MATLAB wrapper tests SKIPPED.')
 elif 'test_headless' not in tests: print('No PsychMetalCore.mex for this machine (make octave on a Mac): real-MEX headless test SKIPPED.')
 # Engine internals, boundary and parity, both front ends against the scripted
 # engine, and the real Python extension headless.
-for test in ['test_stimulus_native.py','test_engine_header.py','test_typecheck.py','test_mouse_dispatch.py','test_native_dispatch.py','test_noise_layout.py','test_mask_cache.py',
+for test in ['test_stimulus_native.py','test_engine_header.py','test_typecheck.py','test_mouse_dispatch.py','test_native_dispatch.py','test_noise_layout.py','test_mask_cache.py','test_fingers.py',
              'test_timing_target.py','test_flip_status.py','test_queue_results.py','test_render_failure.py','test_secure_input.py','test_startup_ready.py','test_frontends.py',
              'test_python_headless.py']:
     run([sys.executable,root/'tests'/test])

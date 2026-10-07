@@ -1,5 +1,7 @@
 // macstubs.h — declarations of the Apple APIs PsychMetal's native core uses, so
 // clang can type-check the Objective-C++ on a machine without the macOS SDK.
+// With -DPM_STUB_IOS it declares what an iPhone has instead: the Mac's display,
+// event, registry and AppKit interfaces are left out, and UIKit's are put in.
 // SPDX-License-Identifier: MIT
 //
 // TEST INFRASTRUCTURE ONLY. Nothing here is ever linked or run. The stubs copy
@@ -33,6 +35,7 @@ typedef CGPoint NSPoint;
 typedef CGSize NSSize;
 typedef CGRect NSRect;
 struct NSEdgeInsets { CGFloat top, left, bottom, right; };
+CGRect CGRectMake(CGFloat x, CGFloat y, CGFloat w, CGFloat h);
 extern const CGRect CGRectZero;
 extern const CGSize CGSizeZero;
 extern const NSRect NSZeroRect;
@@ -87,6 +90,8 @@ CFStringRef __CFStringMakeConstantString(const char *);
 #define CFSTR(s) __CFStringMakeConstantString(s)
 
 // ---- CoreGraphics ----------------------------------------------------------
+typedef struct CGColorSpace *CGColorSpaceRef;
+#ifndef PM_STUB_IOS
 typedef uint32_t CGDirectDisplayID;
 typedef int32_t CGError;
 enum { kCGErrorSuccess = 0 };
@@ -96,7 +101,6 @@ typedef struct CGEventSource *CGEventSourceRef;
 typedef uint64_t CGEventFlags;
 typedef uint16_t CGKeyCode;
 typedef int32_t CGWindowLevel;
-typedef struct CGColorSpace *CGColorSpaceRef;
 typedef enum { kCGEventSourceStatePrivate = -1, kCGEventSourceStateCombinedSessionState = 0,
                kCGEventSourceStateHIDSystemState = 1 } CGEventSourceStateID;
 typedef enum { kCGMouseButtonLeft = 0, kCGMouseButtonRight = 1, kCGMouseButtonCenter = 2 } CGMouseButton;
@@ -171,6 +175,7 @@ CGError CGAssociateMouseAndMouseCursorPosition(bool);
 CFDictionaryRef CGSessionCopyCurrentDictionary(void);
 uint32_t CGDisplayModelNumber(CGDirectDisplayID);
 uint32_t CGDisplaySerialNumber(CGDirectDisplayID);
+#endif
 typedef struct CGContext *CGContextRef;
 typedef uint32_t CGBitmapInfo;
 enum { kCGImageAlphaOnly = 7 };
@@ -206,6 +211,7 @@ double CTLineGetTypographicBounds(CTLineRef, CGFloat *ascent, CGFloat *descent, 
 void CTLineDraw(CTLineRef, CGContextRef);
 
 // ---- IOKit -------------------------------------------------------------------
+#ifndef PM_STUB_IOS
 typedef unsigned int mach_port_t;
 typedef mach_port_t io_object_t;
 typedef io_object_t io_iterator_t;
@@ -225,6 +231,7 @@ extern "C" int IORegistryEntryCreateCFProperties(io_object_t, CFMutableDictionar
 
 // ---- Carbon, mach, dispatch, pthread extensions -----------------------------
 extern "C" bool IsSecureEventInputEnabled(void);
+#endif
 typedef int kern_return_t;
 struct mach_timebase_info_data_t { uint32_t numer, denom; };
 typedef mach_timebase_info_data_t *mach_timebase_info_t;
@@ -249,7 +256,9 @@ extern "C" double CACurrentMediaTime(void);
 @interface NSObject
 + (instancetype)alloc;
 + (instancetype)new;
++ (Class)class;
 - (instancetype)init;
+- (BOOL)isKindOfClass:(Class)aClass;
 @end
 @interface NSString : NSObject
 @property (readonly) const char *UTF8String;
@@ -283,14 +292,17 @@ extern NSRunLoopMode const NSDefaultRunLoopMode;
 @interface NSBundle : NSObject
 @property (class, readonly, strong) NSBundle *mainBundle;
 @property (readonly, copy) NSString *bundleIdentifier;
+- (id)objectForInfoDictionaryKey:(NSString *)key;
 @end
 @interface NSProcessInfo : NSObject
 @property (class, readonly, strong) NSProcessInfo *processInfo;
 @property (readonly, copy) NSString *operatingSystemVersionString;
 @property (readonly, copy) NSString *processName;
+@property (readonly, getter=isLowPowerModeEnabled) BOOL lowPowerModeEnabled;
 @end
 
 // ---- AppKit ----------------------------------------------------------------
+#ifndef PM_STUB_IOS
 typedef NSUInteger NSWindowStyleMask;
 enum { NSWindowStyleMaskBorderless = 0 };
 typedef NSUInteger NSBackingStoreType;
@@ -356,6 +368,7 @@ enum { NSEventTypeKeyDown = 10, NSEventTypeKeyUp = 11, NSEventTypeFlagsChanged =
 - (void)sendEvent:(NSEvent *)e;
 @end
 extern NSApplication *NSApp;
+#endif
 
 // ---- Metal -----------------------------------------------------------------
 typedef NSUInteger MTLPixelFormat;
@@ -517,7 +530,9 @@ enum { kCALayerWidthSizable = 2, kCALayerHeightSizable = 16 };
 @property CGColorSpaceRef colorspace;
 @property BOOL wantsExtendedDynamicRangeContent;
 @property BOOL framebufferOnly;
-@property BOOL displaySyncEnabled;
+#ifndef PM_STUB_IOS
+@property BOOL displaySyncEnabled;      // macOS only
+#endif
 @property NSUInteger maximumDrawableCount;
 @property BOOL presentsWithTransaction;
 @property CGSize drawableSize;
@@ -526,5 +541,170 @@ enum { kCALayerWidthSizable = 2, kCALayerHeightSizable = 16 };
 @interface CATransaction : NSObject
 + (void)flush;
 @end
+
+// ---- enumeration, and sets -------------------------------------------------------
+struct NSFastEnumerationState { unsigned long state; id __unsafe_unretained *itemsPtr; unsigned long *mutationsPtr;
+                                unsigned long extra[5]; };
+@interface NSArray<ObjectType> (Enumeration)
+- (NSUInteger)countByEnumeratingWithState:(NSFastEnumerationState *)state objects:(id __unsafe_unretained [])buffer
+                                    count:(NSUInteger)len;
+@end
+@interface NSSet<ObjectType> : NSObject
+@property (readonly) NSUInteger count;
+- (NSUInteger)countByEnumeratingWithState:(NSFastEnumerationState *)state objects:(id __unsafe_unretained [])buffer
+                                    count:(NSUInteger)len;
+@end
+@interface NSObject (Equality)
+- (BOOL)isEqual:(id)object;
+@end
+
+#ifndef PM_STUB_IOS
+// ---- AppKit: the trackpad's contacts ---------------------------------------------
+typedef NSUInteger NSTouchPhase;
+enum { NSTouchPhaseBegan = 1U << 0, NSTouchPhaseMoved = 1U << 1, NSTouchPhaseStationary = 1U << 2,
+       NSTouchPhaseEnded = 1U << 3, NSTouchPhaseCancelled = 1U << 4 };
+typedef NSUInteger NSTouchTypeMask;
+enum { NSTouchTypeMaskDirect = 1U << 0, NSTouchTypeMaskIndirect = 1U << 1 };
+@interface NSTouch : NSObject
+@property (readonly, strong) id identity;
+@property (readonly) NSTouchPhase phase;
+@property (readonly) NSPoint normalizedPosition;
+@end
+@interface NSEvent (Touches)
+@property (readonly) NSTimeInterval timestamp;
+- (NSSet<NSTouch *> *)touchesMatchingPhase:(NSTouchPhase)phase inView:(NSView *)view;
+@end
+@interface NSView (Touches)
+@property NSTouchTypeMask allowedTouchTypes;
+@end
+#endif
+
+#ifdef PM_STUB_IOS
+// ---- Foundation and QuartzCore, as the iPhone's side uses them ----------------
+@interface NSNumber (Values)
+@property (readonly) BOOL boolValue;
+@end
+@interface NSNotification : NSObject
+@end
+@class NSOperationQueue;
+typedef NSString *NSNotificationName;
+@interface NSNotificationCenter : NSObject
+@property (class, readonly, strong) NSNotificationCenter *defaultCenter;
+- (id)addObserverForName:(NSNotificationName)name object:(id)object queue:(NSOperationQueue *)queue
+              usingBlock:(void (^)(NSNotification *note))block;
+- (void)removeObserver:(id)observer;
+@end
+extern NSRunLoopMode const NSRunLoopCommonModes;
+struct CAFrameRateRange { float minimum, maximum, preferred; };
+CAFrameRateRange CAFrameRateRangeMake(float minimum, float maximum, float preferred);
+@interface CADisplayLink : NSObject
++ (CADisplayLink *)displayLinkWithTarget:(id)target selector:(SEL)selector;
+@property CAFrameRateRange preferredFrameRateRange;
+- (void)addToRunLoop:(NSRunLoop *)runloop forMode:(NSRunLoopMode)mode;
+- (void)invalidate;
+@end
+
+// ---- UIKit -------------------------------------------------------------------
+struct UIEdgeInsets { CGFloat top, left, bottom, right; };
+extern const UIEdgeInsets UIEdgeInsetsZero;
+typedef CGFloat UIWindowLevel;
+extern const UIWindowLevel UIWindowLevelAlert;
+typedef NSInteger UIInterfaceOrientation;
+enum { UIInterfaceOrientationUnknown = 0, UIInterfaceOrientationPortrait = 1 };
+typedef NSUInteger UIInterfaceOrientationMask;
+enum { UIInterfaceOrientationMaskAll = 30 };
+typedef NSUInteger UIRectEdge;
+enum { UIRectEdgeAll = 15 };
+typedef NSInteger UISceneActivationState;
+enum { UISceneActivationStateForegroundActive = 0 };
+typedef NSInteger UIUserInterfaceIdiom;
+enum { UIUserInterfaceIdiomPhone = 0 };
+typedef NSInteger UIKeyboardHIDUsage;
+extern NSNotificationName const UIApplicationWillResignActiveNotification;
+@class UIView, UIWindow, UIScreen, UIViewController, UIEvent, UIPressesEvent;
+@interface UIColor : NSObject
+@property (class, readonly, strong) UIColor *blackColor;
+@end
+@interface UIDevice : NSObject
+@property (class, readonly, strong) UIDevice *currentDevice;
+@property (readonly) UIUserInterfaceIdiom userInterfaceIdiom;
+@end
+@interface UIScreen : NSObject
+@property (readonly) CGRect bounds;
+@property (readonly) CGRect nativeBounds;
+@property (readonly) CGFloat nativeScale;
+@property (readonly) NSInteger maximumFramesPerSecond;
+@end
+typedef NSInteger UIEditingInteractionConfiguration;
+enum { UIEditingInteractionConfigurationNone = 0, UIEditingInteractionConfigurationDefault = 1 };
+@interface UIResponder : NSObject
+@property (readonly) UIEditingInteractionConfiguration editingInteractionConfiguration;
+- (BOOL)becomeFirstResponder;
+- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event;
+- (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event;
+- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event;
+- (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event;
+- (void)pressesBegan:(NSSet *)presses withEvent:(UIPressesEvent *)event;
+- (void)pressesEnded:(NSSet *)presses withEvent:(UIPressesEvent *)event;
+- (void)pressesCancelled:(NSSet *)presses withEvent:(UIPressesEvent *)event;
+@end
+@interface UIView : UIResponder
+- (instancetype)initWithFrame:(CGRect)frame;
+@property (class, readonly) Class layerClass;
+@property (readonly, strong) CALayer *layer;
+@property CGRect frame;
+@property CGRect bounds;
+@property (getter=isHidden) BOOL hidden;
+@property (getter=isMultipleTouchEnabled) BOOL multipleTouchEnabled;
+@property (copy) UIColor *backgroundColor;
+@property (readonly) UIEdgeInsets safeAreaInsets;
+- (void)layoutIfNeeded;
+@end
+@interface UIViewController : UIResponder
+@property (strong) UIView *view;
+- (void)loadView;
+@property (readonly) BOOL prefersStatusBarHidden;
+@property (readonly) BOOL prefersHomeIndicatorAutoHidden;
+@property (readonly) UIRectEdge preferredScreenEdgesDeferringSystemGestures;
+@property (readonly) UIInterfaceOrientationMask supportedInterfaceOrientations;
+@end
+@interface UIScene : UIResponder
+@property (readonly) UISceneActivationState activationState;
+@end
+@interface UIWindowScene : UIScene
+@property (readonly, strong) UIScreen *screen;
+@property (readonly) UIInterfaceOrientation interfaceOrientation;
+@property (readonly, strong) UIWindow *keyWindow;
+@end
+@interface UIWindow : UIView
+- (instancetype)initWithWindowScene:(UIWindowScene *)scene;
+@property UIWindowLevel windowLevel;
+@property (strong) UIViewController *rootViewController;
+@property (weak) UIWindowScene *windowScene;
+- (void)makeKeyAndVisible;
+- (void)makeKeyWindow;
+@end
+@interface UIApplication : UIResponder
+@property (class, readonly, strong) UIApplication *sharedApplication;
+@property (readonly) NSSet<UIScene *> *connectedScenes;
+@property (getter=isIdleTimerDisabled) BOOL idleTimerDisabled;
+@end
+@interface UITouch : NSObject
+@property (readonly) NSTimeInterval timestamp;
+- (CGPoint)preciseLocationInView:(UIView *)view;
+@end
+@interface UIEvent : NSObject
+- (NSArray<UITouch *> *)coalescedTouchesForTouch:(UITouch *)touch;
+@end
+@interface UIPressesEvent : UIEvent
+@end
+@interface UIKey : NSObject
+@property (readonly) UIKeyboardHIDUsage keyCode;
+@end
+@interface UIPress : NSObject
+@property (readonly) NSTimeInterval timestamp;
+@property (readonly) UIKey *key;
+@end
+#endif
 
 #endif

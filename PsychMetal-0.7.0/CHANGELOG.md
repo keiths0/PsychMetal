@@ -7,6 +7,12 @@
 - Snapshot per-draw parameters and retain mask texture versions through GPU completion.
 - Add matching mouse-controlled demos, native validation/lifetime tests and a real-Metal pixel test.
 - Native modules built; hardware acceptance and timing remain pending. See GPU-STIMULI.md.
+- iPhone and iPad, from Python: a second platform layer for the same engine. Built for iOS 15 and later and run on an iPhone 18 Pro at 120 Hz; nothing there has been timed. See IOS.md for what has been seen and what is known not to carry over. The engine's Mac-only code (AppKit window, display capture, modes, event taps, the IO registry) sits between `#if !PM_IOS` and `#endif`; the iPhone's is `PsychMetalIOS.h`. The Mac build is meant to be unchanged.
+- New `TouchEvents` (`touch_events`; engine `touchEvents`): every finger's contacts with their own times, as n×5 `[time finger phase x y]`. On an iPhone it is the touch screen. On a Mac it is the trackpad, each finger placed in the window as it is on the trackpad; the window's view is one that can take them (`PMTouchView`) and is told to at the first call, which returns nothing; where the experiment runs on the main thread each call delivers the waiting AppKit events itself. The Mac's side is written and type-checked, not yet run.
+- On an iPhone fingers are the mouse and one key: one is the pointer, a second down is button 1, a third is Escape. A program written for a mouse and a keyboard runs unchanged. `tests/test_fingers.py` runs these rules.
+- `phone/`: an app (Briefcase) that lists this package's demos and tests, runs them as they are, and shows what they print.
+- Python: `start(fn, done=...)` runs an experiment on a thread of its own and returns, for a program whose main thread runs its own loop (an app); `stop()` ends it at its next frame. A psychmetal call from the main thread while another thread is inside the engine now raises instead of waiting, which could never have ended.
+- `tests/test_typecheck.py` checks the engine for the Mac and for the iPhone: against stand-in headers elsewhere, against the real SDKs on a Mac with Xcode.
 
 
 ## 0.6.0 — 2026-10-06

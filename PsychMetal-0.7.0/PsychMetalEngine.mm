@@ -6,17 +6,31 @@
 // through pm::HostHooks, images are read through strided views, and the pm::
 // functions at the end of this file are the boundary. Front ends:
 // PsychMetalMex.cpp (MATLAB, Octave) and PsychMetalPython.cpp (Python).
+//
+// One engine for the Mac and for the iPhone and iPad. Drawing, textures,
+// presentation and timing are the same code on both. What differs is the window,
+// the display and input: the Mac's are in this file, between #if !PM_IOS and
+// #endif, and the iPhone's are in PsychMetalIOS.h, which is a part of this file,
+// included once near its end.
 #include "PsychMetalEngine.h"
 #include "PsychMetalInternal.h"
 #include "PsychMetalShaders.h"
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#define PM_IOS 1
+#import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
+#else
+#define PM_IOS 0
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
+#import <IOKit/IOKitLib.h>
+#endif
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CATransaction.h>
 #import <CoreText/CoreText.h>
-#import <IOKit/IOKitLib.h>
 #include <mach/mach_time.h>
 #include <dispatch/dispatch.h>
 #include <errno.h>
@@ -53,7 +67,11 @@ typedef struct {
 } Record;
 static std::vector<Record> startupRecords;
 static bool startupReady=false;
+#if PM_IOS
+static UIWindow *metalWindow;
+#else
 static NSWindow *metalWindow;
+#endif
 static CAMetalLayer *layer;
 static id<MTLDevice> device;
 static id<MTLCommandQueue> queue;
@@ -166,10 +184,14 @@ static NSUInteger renderWidth, renderHeight;
 static uint64_t nextToken=1, confirmedCount, missingPresentedCount;
 static uint64_t lastFlipToken;     // the last frame of Flip; the caller's thread only
 static NSInteger selectedScreenIndex = -1;
+#if !PM_IOS
 static CGDirectDisplayID selectedDisplayID = 0;
+#endif
 static Record rec[NREC];
 static bool closing = true;
+#if !PM_IOS
 static std::mutex secureInputStateLock;
+#endif
 static double keyScanMaxMs=0,secureQueryMaxMs=0,keyScanTotalMs=0,secureQueryTotalMs=0;
 static uint64_t keyReadCount=0;
 static int inFlightCount;
@@ -223,6 +245,16 @@ static uint64_t lastHandedToken;                    // the newest frame the pres
 #define PM_QUEUE_LOST 10.0                          // seconds after its time that a frame's report is given up on
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+#if PM_IOS
+// The iPhone's side of the engine, defined in PsychMetalIOS.h.
+static void readKeyboardState(bool *kv, const bool *filter);
+static void startKeyTap(void);
+static void stopKeyTap(void);
+static void stopMouseTap(void);
+static void iosOpenWindow(NSUInteger w, NSUInteger h, double hz, NSUInteger drawableCount, bool readable);
+static void iosCloseWindow(void);
+static void iosRequireFront(void);
+#else
 // Virtual key code to HID usage; 0 where there is none.
 static const unsigned char vkToUsage[128] = {
     /* 0x00 */  4, 22,  7,  9, 11, 10, 29, 27,
@@ -281,6 +313,7 @@ static void readKeyboardState(bool *kv,const bool *filter) {
 
     if(filter) for(int k=0;k<256;k++) if(!filter[k]) kv[k]=false;
 }
+#endif
 static double keyboardClock() { return CACurrentMediaTime(); }
 static pm::HostHooks hooks;
 static void hookPin() { if (hooks.pinModule) hooks.pinModule(); }
@@ -297,6 +330,30 @@ static void hookWarn(const char *id, const char *fmt, ...) {
 static PMKeyboardQueue keyboardQueue(readKeyboardState,keyboardClock);
 static bool keyboardQueueLocked=false;
 
+// Fingers' contacts, kept until TouchEvents takes them: the touch screen's on an
+// iPhone, the trackpad's on a Mac. Whoever fills it guards it.
+#define PM_TOUCH_EVENTS 8192
+#define PM_FINGERS 16
+struct PMTouchRing {
+    pm::TouchEvent events[PM_TOUCH_EVENTS];
+    unsigned head = 0, count = 0;
+    uint64_t dropped = 0;
+    void push(const pm::TouchEvent &e) {
+        if (count == PM_TOUCH_EVENTS) { head = (head + 1) % PM_TOUCH_EVENTS; count--; dropped++; }
+        events[(head + count++) % PM_TOUCH_EVENTS] = e;
+    }
+    pm::TouchEvents take() {
+        pm::TouchEvents out{};
+        out.events.reserve(count);
+        for (unsigned i = 0; i < count; i++) out.events.push_back(events[(head + i) % PM_TOUCH_EVENTS]);
+        out.dropped = dropped;
+        clear();
+        return out;
+    }
+    void clear() { head = count = 0; dropped = 0; }
+};
+static PMTouchRing touchRing;
+#if !PM_IOS
 // --- input events ---------------------------------------------------------------
 //
 // Listen-only event taps on a thread of their own, so key and mouse-button events
@@ -526,6 +583,7 @@ static void stopMouseTap(void) {
     mouseEventHead = mouseEventCount = 0;
     mouseEventsDropped = 0;
 }
+#endif
 
 static void releaseKeyboardQueue() {
     stopKeyTap();
@@ -538,7 +596,9 @@ static void closeCore(void);
 static void stopPresenter(void);
 static void notePipelineSample(Record *q);
 static void prepareApp(void);
+#if !PM_IOS
 static void settleAppKit(double seconds);
+#endif
 static void onMainSync(dispatch_block_t block) {
     if (pthread_main_np())
         block();
@@ -844,8 +904,7 @@ static bool encodeFrame(id<MTLCommandBuffer> cb, id<MTLTexture> out, uint64_t to
 
 static void attachHandlers(id<MTLCommandBuffer> cb, id<CAMetalDrawable> d, uint64_t token) {
     const uint64_t epoch=sessionEpoch;
-    [d addPresentedHandler:^(id<MTLDrawable> x) {
-        double pt = x.presentedTime, ct = CACurrentMediaTime();
+    void (^presented)(double, double) = ^(double pt, double ct) {
         pthread_mutex_lock(&lock);
         Record *q = epoch==sessionEpoch ? recordFor(token) : nullptr;
         if (q) {
@@ -896,7 +955,20 @@ static void attachHandlers(id<MTLCommandBuffer> cb, id<CAMetalDrawable> d, uint6
         }
         pthread_cond_broadcast(&cond);
         pthread_mutex_unlock(&lock);
+    };
+#if TARGET_OS_SIMULATOR
+    // The simulator's drawables do not report when they were shown. So that
+    // programs run there at all, the time a frame's rendering finished stands
+    // in: nothing timed in the simulator says anything about a device.
+    (void)d;
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> x) {
+        (void)x;
+        const double now = CACurrentMediaTime();
+        presented(now, now);
     }];
+#else
+    [d addPresentedHandler:^(id<MTLDrawable> x) { presented(x.presentedTime, CACurrentMediaTime()); }];
+#endif
     [cb addCompletedHandler:^(id<MTLCommandBuffer> x) {
         pthread_mutex_lock(&lock);
         Record *q = epoch==sessionEpoch ? recordFor(token) : nullptr;
@@ -1055,6 +1127,9 @@ static void closeCore(void) {
     queuedTokens.clear();
     pthread_mutex_unlock(&lock);
     if(!drained) hookWarn(pm::kWarnDrainTimeout, "Close timed out waiting for callbacks; old callbacks have been isolated.");
+#if PM_IOS
+    iosCloseWindow();
+#else
     if (metalWindow)
         onMainSync(^{
             metalWindow.ignoresMouseEvents = YES;
@@ -1075,6 +1150,7 @@ static void closeCore(void) {
         onMainSync(^{
             [NSApp setActivationPolicy:(NSApplicationActivationPolicy)activationPolicyBefore];
         });
+#endif
     activationPolicyPromotionAttempted = false;
     activationPolicyPromotionSucceeded = false;
     appPrepared = false;
@@ -1118,6 +1194,7 @@ static void closeCore(void) {
 }
 static void prepareApp(void) {
     closeCore();
+#if !PM_IOS
     onMainSync(^{
         NSApplication *app = [NSApplication sharedApplication];
         activationPolicyBefore = app.activationPolicy;
@@ -1130,8 +1207,63 @@ static void prepareApp(void) {
         [app activateIgnoringOtherApps:YES];
         activationPolicyAfter = app.activationPolicy;
     });
+#endif
     appPrepared = true;
 }
+#if !PM_IOS
+// The window's view, which takes the trackpad's contacts: fingers resting or
+// moving on it, apart from what the system makes of them as a pointer. A
+// contact's place is where it is on the trackpad, as a place in the window: the
+// trackpad's corners are the window's. AppKit delivers them, with its events'
+// times, to the view under the pointer, on the main thread, once the view asks
+// for them, which it does at the first TouchEvents: a program that never asks
+// gets the window it always had.
+static std::mutex trackpadLock;             // guards touchRing and trackpadFinger
+static id trackpadFinger[PM_FINGERS];       // the identity of the contact that is finger k + 1
+static bool trackpadListening;              // the view has been told to take contacts
+@interface PMTouchView : NSView
+@end
+@implementation PMTouchView
+- (void)note:(NSEvent *)event matching:(NSTouchPhase)matching phase:(int)phase {
+    std::lock_guard<std::mutex> guard(trackpadLock);
+    for (NSTouch *touch in [event touchesMatchingPhase:matching inView:self]) {
+        id identity = touch.identity;
+        int finger = 0;
+        for (int k = 0; k < PM_FINGERS && !finger; k++)
+            if (trackpadFinger[k] && [trackpadFinger[k] isEqual:identity]) finger = k + 1;
+        if (!finger && phase == 0)
+            for (int k = 0; k < PM_FINGERS && !finger; k++)
+                if (!trackpadFinger[k]) { trackpadFinger[k] = identity; finger = k + 1; }
+        if (!finger) continue;      // more fingers than are numbered, or one not seen going down
+        const NSPoint at = touch.normalizedPosition;        // 0 to 1, from the trackpad's lower left
+        touchRing.push({event.timestamp, finger, phase, at.x * (double)renderWidth,
+                        (1.0 - at.y) * (double)renderHeight});
+        if (phase >= 2) trackpadFinger[finger - 1] = nil;
+    }
+}
+- (void)touchesBeganWithEvent:(NSEvent *)event { [self note:event matching:NSTouchPhaseBegan phase:0]; }
+- (void)touchesMovedWithEvent:(NSEvent *)event { [self note:event matching:NSTouchPhaseMoved phase:1]; }
+- (void)touchesEndedWithEvent:(NSEvent *)event { [self note:event matching:NSTouchPhaseEnded phase:2]; }
+- (void)touchesCancelledWithEvent:(NSEvent *)event { [self note:event matching:NSTouchPhaseCancelled phase:3]; }
+@end
+
+// The events waiting for this application, delivered: the main thread's work
+// where no loop of the host's does it. Key events are taken and not delivered: a
+// window with nothing to do with one beeps. Main thread.
+static void deliverAppKitEvents(NSDate *until) {
+    static bool launched = false;
+    NSApplication *app = [NSApplication sharedApplication];
+    if (!launched) { [app finishLaunching]; launched = true; }
+    NSEvent *event;
+    while ((event = [app nextEventMatchingMask:NSEventMaskAny untilDate:until
+                                        inMode:NSDefaultRunLoopMode dequeue:YES])) {
+        NSEventType t = event.type;
+        if (t != NSEventTypeKeyDown && t != NSEventTypeKeyUp && t != NSEventTypeFlagsChanged)
+            [app sendEvent:event];
+        until = [NSDate distantPast];   // drain what is queued, then return
+    }
+}
+
 static void settleAppKit(double seconds) {
     onMainSync(^{
         NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:seconds];
@@ -1140,6 +1272,7 @@ static void settleAppKit(double seconds) {
                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     });
 }
+#endif
 // A pipeline for one pair of shader functions, one target format and one way of
 // blending (pm::internal::blendFor, which says what each mode does).
 static_assert(MTLBlendFactorZero == 0 && MTLBlendFactorOne == 1 && MTLBlendFactorSourceAlpha == 4 &&
@@ -1246,6 +1379,11 @@ static void openCore(NSUInteger w, NSUInteger h, double period,
     queue = [device newCommandQueue];
     if (!queue)
         failOpen(pm::kErrMetal, @"Could not create a Metal command queue.");
+#if PM_IOS
+    (void)screenIndex; (void)globalLeft; (void)globalTop; (void)globalRight; (void)globalBottom; (void)doCapture;
+    displaySync = true;         // presentation here is always synchronized to the display
+    iosOpenWindow(w, h, 1.0 / period, drawableCount, readable);
+#else
     __block NSString *mappingWarning = nil;
     onMainSync(^{
         NSArray<NSScreen *> *screens = NSScreen.screens;
@@ -1291,8 +1429,9 @@ static void openCore(NSUInteger w, NSUInteger h, double period,
         metalWindow.collectionBehavior = NSWindowCollectionBehaviorStationary |
                                          NSWindowCollectionBehaviorFullScreenNone |
                                          NSWindowCollectionBehaviorIgnoresCycle;
-        NSView *view = [[NSView alloc] initWithFrame:metalWindow.contentView.bounds];
+        PMTouchView *view = [[PMTouchView alloc] initWithFrame:metalWindow.contentView.bounds];
         view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        trackpadListening = false;
         view.wantsLayer = YES;
         layer = [CAMetalLayer layer];
         layer.device = device;
@@ -1349,6 +1488,7 @@ static void openCore(NSUInteger w, NSUInteger h, double period,
                     @"Metal drawable is %.0fx%.0f but the render rectangle is %lux%lu. "
                      "Refusing to scale the stimulus.", actualDrawableSize.width,
                     actualDrawableSize.height, (unsigned long)w, (unsigned long)h]);
+#endif
     ifi = period;
     renderWidth = w;
     renderHeight = h;
@@ -1599,6 +1739,9 @@ static uint64_t enqueueDirect(double when, bool haveWhen) {
 }
 static uint64_t prepareFlip(void) {
     if(!device || closing) fail("PsychMetal is not open.");
+#if PM_IOS
+    iosRequireFront();
+#endif
     if (preparedToken)
         fail("A frame is already prepared; call PresentNow before preparing another.");
     pthread_mutex_lock(&lock);
@@ -1707,6 +1850,9 @@ static bool waitQueueIdleLocked(void) {
 }
 static uint64_t enqueue(double when, bool haveWhen) {
     if(!device || closing) fail("PsychMetal is not open.");
+#if PM_IOS
+    iosRequireFront();
+#endif
     if(preparedToken) fail("Present or cancel the prepared frame before Flip.");
     flushTarget();
     pthread_mutex_lock(&lock);
@@ -1876,6 +2022,9 @@ static void stopPresenter(void) {
 
 static pm::QueueResult queueFrame(double when) {
     if (!device || closing) fail("PsychMetal is not open.");
+#if PM_IOS
+    iosRequireFront();
+#endif
     if (preparedToken) fail("Present the prepared frame before queuing frames.");
     if (!isfinite(when) || !(when > 0)) fail("A queued frame needs a presentation time.");
     flushTarget();
@@ -2115,6 +2264,10 @@ static std::vector<pm::FrameRecord> historyRecords(void) {
     return out;
 }
 
+#if PM_IOS
+#include "PsychMetalIOS.h"
+#endif
+
 // ===========================================================================
 // pm:: — the engine boundary (PsychMetalEngine.h). Argument unpacking belongs
 // to the front ends. Every entry point that touches Objective-C opens an
@@ -2139,20 +2292,16 @@ bool pm::onMainThread() noexcept { return pthread_main_np() != 0; }
 void pm::serviceMainRunLoop(double seconds) {
     if (!pthread_main_np())
         fail("serviceMainRunLoop must be called on the main thread.");
+#if PM_IOS
+    // The app's own loop runs the main thread here; this only lets it turn.
     @autoreleasepool {
-        static bool launched = false;
-        NSApplication *app = [NSApplication sharedApplication];
-        if (!launched) { [app finishLaunching]; launched = true; }
-        NSDate *until = [NSDate dateWithTimeIntervalSinceNow:seconds];
-        NSEvent *event;
-        while ((event = [app nextEventMatchingMask:NSEventMaskAny untilDate:until
-                                            inMode:NSDefaultRunLoopMode dequeue:YES])) {
-            NSEventType t = event.type;
-            if (t != NSEventTypeKeyDown && t != NSEventTypeKeyUp && t != NSEventTypeFlagsChanged)
-                [app sendEvent:event];
-            until = [NSDate distantPast];   // drain what is queued, then return
-        }
+        [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:seconds]];
     }
+#else
+    @autoreleasepool {
+        deliverAppKitEvents([NSDate dateWithTimeIntervalSinceNow:seconds]);
+    }
+#endif
 }
 
 // --- session lifecycle ------------------------------------------------------
@@ -2173,6 +2322,23 @@ pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
         if (o.bitDepth != 8 && o.bitDepth != 10)
             fail("Bit depth must be 8 or 10.");
 
+#if PM_IOS
+        if (pthread_main_np())
+            fail("On this device the main thread belongs to the app: run the experiment on a thread of its own.");
+        // The device's own screen, as the app holds it now. An external display is
+        // not supported yet.
+        if (screenIndex < 0)
+            screenIndex = 0;
+        if (screenIndex >= 1)
+            failWith(pm::kErrScreen, "Screen index %d is out of range; %u display(s) are active.",
+                     (int)screenIndex, 1u);
+        if (o.bitDepth != 8)
+            fail("10-bit frames are not available on this device yet.");
+        const PMScreen screen = iosScreen();
+        CGRect b = CGRectMake(0, 0, screen.pointWidth, screen.pointHeight);
+        size_t pxW = screen.pixelWidth, pxH = screen.pixelHeight;
+        double hz = screen.refreshHz;
+#else
         uint32_t count = 0;
         CGDirectDisplayID ids[16];
         if (CGGetActiveDisplayList(16, ids, &count) != kCGErrorSuccess || count == 0)
@@ -2193,6 +2359,7 @@ pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
             if (mw && mh) { pxW = mw; pxH = mh; }
             CGDisplayModeRelease(dm);
         }
+#endif
         if (!(hz > 0.0) && !o.refreshHz) {
             hookWarn(pm::kWarnRefresh, "Display does not report a fixed refresh rate. Using provisional 60 Hz; set a fixed display mode and supply OpenWindow refreshHz for timing work.");
             hz = 60.0;
@@ -2279,10 +2446,14 @@ pm::PresentResult pm::presentNow() {
 
 void pm::setDisplaySync(bool enabled) {
     if (!layer) fail("PsychMetal is not open.");
+#if PM_IOS
+    if (!enabled) fail("Presentation cannot be unsynchronized from the display on this device.");
+#else
     @autoreleasepool {
         __block BOOL on = enabled ? YES : NO;
         onMainSync(^{ layer.displaySyncEnabled = on; });
     }
+#endif
     pthread_mutex_lock(&lock);
     displaySync = enabled;
     pthread_mutex_unlock(&lock);
@@ -2999,6 +3170,7 @@ void pm::getImage16(const pm::ImageRegion &g, const pm::MutableWordView &out) {
     }
 }
 
+#if !PM_IOS
 // --- display modes and cursor ----------------------------------------------
 
 static CGDirectDisplayID displayForIndex(double si) {
@@ -3193,6 +3365,28 @@ pm::LinkInfo pm::linkInfo() {
 
 // --- input ------------------------------------------------------------------
 
+// Fingers on the trackpad. The first call starts listening and returns nothing.
+// Where the experiment runs on the main thread (Octave, or Python without a
+// thread of its own) nothing else delivers the events that carry them, so this
+// does.
+pm::TouchEvents pm::touchEvents() {
+    if (!device || closing || !metalWindow) fail("TouchEvents requires an open PsychMetal window.");
+    if (!trackpadListening) {
+        {
+            std::lock_guard<std::mutex> guard(trackpadLock);
+            touchRing.clear();
+            for (int k = 0; k < PM_FINGERS; k++) trackpadFinger[k] = nil;
+        }
+        onMainSync(^{ metalWindow.contentView.allowedTouchTypes = NSTouchTypeMaskIndirect; });
+        trackpadListening = true;
+        return {};
+    }
+    if (pthread_main_np())
+        @autoreleasepool { deliverAppKitEvents([NSDate distantPast]); }
+    std::lock_guard<std::mutex> guard(trackpadLock);
+    return touchRing.take();
+}
+
 pm::MouseState pm::mouse() {
     if (!metalWindow || !selectedDisplayID || !renderWidth || !renderHeight)
         fail("Mouse requires an open PsychMetal window.");
@@ -3234,13 +3428,17 @@ void pm::setMouse(double x, double y) {
     // unless the mouse and the cursor are associated again.
     CGAssociateMouseAndMouseCursorPosition(true);
 }
+#endif
 
 pm::KbQueueStatus pm::kbQueueStatus() {
     auto state=keyboardQueue.stats();
-    double pid=0; CFDictionaryRef sess=CGSessionCopyCurrentDictionary();
+    double pid=0;
+#if !PM_IOS
+    CFDictionaryRef sess=CGSessionCopyCurrentDictionary();
     if(sess) { CFTypeRef value=CFDictionaryGetValue(sess,CFSTR("kCGSSessionSecureInputPID"));
         if(value && CFGetTypeID(value)==CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)value,kCFNumberDoubleType,&pid);
         CFRelease(sess); }
+#endif
     return {state.created, state.running, state.interval, state.lastScanInterval,
             state.maxScanInterval, (uint64_t)state.scans, (uint64_t)state.dropped, pid,
             state.events, (uint64_t)state.eventStamped, (uint64_t)state.pollStamped,
@@ -3260,9 +3458,11 @@ void pm::kbQueueRelease() { releaseKeyboardQueue(); }
 
 void pm::kbQueueStart() {
     if(!keyboardQueue.exists()) fail("Create a keyboard queue first.");
+#if !PM_IOS
     uint32_t displayCount=0;
     if(CGGetActiveDisplayList(0,nullptr,&displayCount)!=kCGErrorSuccess || !displayCount)
         fail("No active desktop session for keyboard polling.");
+#endif
     if(keyboardQueue.isRunning()) return;
     if(!keyboardQueue.start()) fail("Cannot start keyboard queue worker.");
     startKeyTap();
@@ -3274,6 +3474,7 @@ void pm::kbQueueStop() {
     keyboardQueue.stop();
 }
 
+#if !PM_IOS
 // 'MouseEvents'. The first call starts listening and returns nothing.
 pm::MouseEvents pm::mouseEvents() {
     if (!metalWindow || !selectedDisplayID || !renderWidth || !renderHeight)
@@ -3312,6 +3513,7 @@ pm::MouseEvents pm::mouseEvents() {
     mouseEventsDropped = 0;
     return out;
 }
+#endif
 
 void pm::kbQueueFlush() {
     if(!keyboardQueue.exists()) fail("Create a keyboard queue first.");
@@ -3356,8 +3558,10 @@ pm::KeyState pm::keys() {
     // Serialize this non-thread-safe API; never call it from the keyboard worker.
     // Do not dispatch to the GUI thread: CLI hosts may not pump its run loop.
     bool secureActive=false;
+#if !PM_IOS
     { std::lock_guard<std::mutex> guard(secureInputStateLock);
       secureActive=IsSecureEventInputEnabled()!=0; }
+#endif
     out.securePid=secureActive ? -1.0 : 0.0; // -1 means active, owner not queried
 
     double secureMs=(CACurrentMediaTime()-secureBegan)*1000;
@@ -3433,7 +3637,9 @@ pm::DiagnosticReport pm::diagnostic() {
         d.lastTargetErrorMs = snapshotTargetError;
         d.lastConfirmDelayMs = snapshotConfirmDelay;
         d.appKitScreenIndex = (double)selectedScreenIndex;
+#if !PM_IOS
         d.cgDisplayID = (double)selectedDisplayID;
+#endif
         d.renderWidth = (double)renderWidth;
         d.renderHeight = (double)renderHeight;
         d.drawableWidth = drawableSize.width;
@@ -3441,6 +3647,13 @@ pm::DiagnosticReport pm::diagnostic() {
         d.displayCaptured = displayCaptured;
         d.readbackEnabled = captureTexture != nil;
         double modePointWidth = NAN, modePixelWidth = NAN, nativePixelWidth = NAN;
+#if PM_IOS
+        if (metalWindow) {
+            const PMScreen screen = iosScreen();
+            modePointWidth = screen.pointWidth;
+            modePixelWidth = nativePixelWidth = (double)screen.pixelWidth;
+        }
+#else
         if (selectedDisplayID) {
             CGDisplayModeRef current = CGDisplayCopyDisplayMode(selectedDisplayID);
             if (current) {
@@ -3459,6 +3672,7 @@ pm::DiagnosticReport pm::diagnostic() {
                 CFRelease(all);
             }
         }
+#endif
         d.modePointWidth = modePointWidth;
         d.modePixelWidth = modePixelWidth;
         d.largestModePixelWidth = nativePixelWidth;
@@ -3473,6 +3687,9 @@ pm::DiagnosticReport pm::diagnostic() {
         d.lastShapeRect = {lastShape.rect[0], lastShape.rect[1], lastShape.rect[2], lastShape.rect[3]};
         d.lastShapeColor = {lastShape.color[0], lastShape.color[1], lastShape.color[2], lastShape.color[3]};
         d.lastShapeKind = (double)lastShape.kind;
+#if PM_IOS
+        iosDescribeWindow(d);
+#else
         __block NSRect winFrame = NSZeroRect, viewB = NSZeroRect, layerF = NSZeroRect;
         __block NSRect scrFrame = NSZeroRect, scrVisible = NSZeroRect;
         __block NSEdgeInsets insets = NSEdgeInsetsMake(0, 0, 0, 0);
@@ -3505,6 +3722,7 @@ pm::DiagnosticReport pm::diagnostic() {
         d.screenSafeAreaInsets = {insets.top, insets.left, insets.bottom, insets.right};
         d.cgDisplayBounds = r4(cgb);
         d.backingScaleFactor = backingScale;
+#endif
         d.inFlight = (double)snapshotInFlight;
         d.requestedDrawableCount = (double)snapshotRequestedDrawables;
         d.drawableCountReadback = (double)snapshotDrawableReadback;

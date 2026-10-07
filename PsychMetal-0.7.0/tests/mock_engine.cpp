@@ -13,7 +13,8 @@
 //                    (submitted, never shown). Default 0: none.
 //   PM_MOCK_MOUSE    "CLICK_AFTER,DX,DY" the mouse moves (DX, DY) per Mouse call
 //                    and the left button is down once CLICK_AFTER frames have
-//                    been flipped (-1: never). Default -1,0,0.
+//                    been flipped (-1: never). Default -1,0,0. At that frame a
+//                    finger also touches the screen there, moves and lifts.
 // Readback (OpenOptions::readback): a small software renderer stands in for the
 // GPU, so GetImage returns real pixels and the readback checks run here too.
 // It draws what those checks use and nothing else: the background, FillRect,
@@ -285,6 +286,9 @@ double queueCapacity() {
 // Mouse-button events, once MouseEvents has been called.
 bool mouseListening = false;
 std::vector<pm::MouseEvent> mouseEventList;
+// A scripted touch: with the scripted click, a finger goes down where the mouse
+// is, moves ten pixels to the right over the next refresh, and lifts.
+std::vector<pm::TouchEvent> touchEventList;
 
 uint64_t present(double when) {
     double now = clockNow();
@@ -315,6 +319,11 @@ uint64_t present(double when) {
     flips++;
     if (mouseListening && clickAfter >= 0 && flips == (uint64_t)clickAfter)
         mouseEventList.push_back({next, 1, true, mouseX, mouseY});
+    if (clickAfter >= 0 && flips == (uint64_t)clickAfter) {
+        touchEventList.push_back({next, 1, 0, mouseX, mouseY});
+        touchEventList.push_back({next + ifi / 2, 1, 1, mouseX + 5, mouseY});
+        touchEventList.push_back({next + ifi, 1, 2, mouseX + 10, mouseY});
+    }
     return t;
 }
 
@@ -372,7 +381,7 @@ pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
     bits = (int)o.bitDepth; blendNow = 0; gammaMode = 0; gammaTable.clear();
     for (int &c : clipNow) c = 0;
     targetHandle = 0; targetItemBase = targetCountBase = 0;
-    queued.clear(); lastPlanned = 0; mouseListening = false; mouseEventList.clear();
+    queued.clear(); lastPlanned = 0; mouseListening = false; mouseEventList.clear(); touchEventList.clear();
     open = true; closing = false; session++;
     if (nextHandle <= session) nextHandle = session + 1;   // a texture handle is never the window's
     return {display.w, display.h, ifi, display.w, display.h, session};
@@ -935,6 +944,12 @@ pm::KbQueueStatus pm::kbQueueStatus() {
     return {s.created, s.running, s.interval, s.lastScanInterval, s.maxScanInterval,
             (uint64_t)s.scans, (uint64_t)s.dropped, 0,
             s.events, (uint64_t)s.eventStamped, (uint64_t)s.pollStamped, s.maxEventDelay * 1000};
+}
+pm::TouchEvents pm::touchEvents() {
+    if (!open) fail("TouchEvents requires an open PsychMetal window.");
+    pm::TouchEvents out{};
+    out.events.swap(touchEventList);
+    return out;
 }
 pm::MouseEvents pm::mouseEvents() {
     if (!open) fail("MouseEvents requires an open PsychMetal window.");

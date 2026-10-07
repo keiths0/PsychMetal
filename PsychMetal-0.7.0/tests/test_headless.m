@@ -6,7 +6,7 @@ reject(@() PsychMetalCore('BlendMode',1));reject(@() PsychMetalCore('Gamma',.5,.
 reject(@() PsychMetalCore('TextBounds','a','',20)+0);reject(@() PsychMetalCore('DrawText','a','',20,0,0,[1 1 1 1])+0);reject(@() PsychMetalCore('LinkInfo')+0);
 reject(@() PsychMetalCore('Clip',[0 0 10 10]));reject(@() PsychMetalCore('OpenOffscreen',10,10,[0 0 0 1])+0);reject(@() PsychMetalCore('SetTarget',0));
 reject(@() PsychMetalCore('DrawPolygon',zeros(2,3),[1 1 1 1],0));reject(@() PsychMetalCore('QueueFlip',1)+0);reject(@() PsychMetalCore('QueueResults',1)+0);
-reject(@() PsychMetalCore('QueueCancel')+0);reject(@() mouseEvents());
+reject(@() PsychMetalCore('QueueCancel')+0);reject(@() mouseEvents());reject(@() touchEvents());
 h=PsychMetalCore('StartupHistory');assert(isequal(size(h),[0 6]));
 reject(@() PsychMetal('KbQueueCreate',sparse(1,23,1,1,256)));
 reject(@() PsychMetalCore('KbQueueCreate',sparse(1,23,1,1,256),.002));
@@ -24,6 +24,9 @@ function coreFlip(),t=PsychMetalCore('Flip');end
 function corePrepare(),t=PsychMetalCore('PrepareFlip');end
 function mouseEvents()
 [e,d]=PsychMetalCore('MouseEvents'); %#ok<ASGLU>
+end
+function touchEvents()
+[e,d]=PsychMetalCore('TouchEvents'); %#ok<ASGLU>
 end
 function reject(fn)
 raised=false;try,fn();catch,raised=true;end;assert(raised,'Invalid native call was accepted');

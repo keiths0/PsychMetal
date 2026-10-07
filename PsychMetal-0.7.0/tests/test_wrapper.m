@@ -174,6 +174,8 @@ PsychMetal('QueueResults',w,false);assert(isequal(PMTestArgs,{0}));
 assert(PsychMetal('QueueCancel',w)==2);
 [events,dropped]=PsychMetal('MouseEvents',w);assert(isequal(events,[1.5 1 1 10 20]) && dropped==0);
 reject(@() PsychMetal('MouseEvents',w,1));
+[events,dropped]=PsychMetal('TouchEvents',w);assert(isequal(events,[2.5 1 0 30 40]) && dropped==0);
+reject(@() PsychMetal('TouchEvents',w,1));
 PsychMetal('Close',w);
 v=PsychMetal('OpenWindow');assert(v~=w);
 reject(@() PsychMetal('FillRect',w,255));PsychMetal('Close',v);

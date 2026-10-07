@@ -68,6 +68,7 @@ Each front end links the engine directly; a process loads one front end, so ther
 | SetMouse | `setMouse(x, y)` |  | none | `set_mouse` |
 | KbQueueStatus | `kbQueueStatus()` |  | 12-field struct | `kb_queue_status` |
 | MouseEvents | `mouseEvents()` |  | n×5 double, dropped scalar | `mouse_events` |
+| TouchEvents | `touchEvents()` |  | n×5 double, dropped scalar | `touch_events` |
 | KbQueueCreate | `kbQueueCreate(mask, interval)` |  | none | `kb_queue_create` |
 | KbQueueRelease | `kbQueueRelease()` | B | none | `kb_queue_release` |
 | KbQueueStart | `kbQueueStart()` |  | none | `kb_queue_start` |

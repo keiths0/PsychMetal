@@ -4,6 +4,8 @@ New reusable GPU noise/grating recipes, independent image/ellipse/Gaussian masks
 
 This is an unpublished development build based on 0.6.0. All three native modules build; live GPU pixels and timing still require acceptance. Start with `PsychMetalStimulusDemo` or `python/stimulus_demo.py`. Use the 0.7.0 folder in the installation examples below. Historical validation results below apply to their named versions, not this build.
 
+This build also holds a port of the engine to iPhone and iPad, for Python only, and an app that runs this package's demos there ([phone/](phone/README.md)). It builds and runs on an iPhone 18 Pro; nothing on it has been timed. See [IOS.md](IOS.md).
+
 ## What changed in 0.6.0
 
 0.6.0 includes everything that was in the unreleased 0.5.2.

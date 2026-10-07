@@ -348,6 +348,7 @@ try
  reject('QueueFlip with a time of zero rejected', @() inventoryPM('QueueFlip', w, 0));
  check('a Flip after queued frames', @() inventoryPM('Flip', w));
  check('MouseEvents returns events and a count', @() assertMouseEvents(w));
+ check('TouchEvents returns events and a count', @() assertTouchEvents(w));
  check('KbQueueStatus says where key times come from', @() assertKeyTimes());
  % ---- two-phase presentation, measurement instruments --------------------
  check('SetDisplaySync off/on', @() setSyncBoth(w));
@@ -783,6 +784,11 @@ n = inventoryPM('QueueCancel', w);
 frames = inventoryPM('QueueResults', w);
 assert(n == 3 && isequal(size(frames), [3 4]) && all(frames(:, 3) == 5) && inventoryPM('GetSecs') < t0, ...
     'Cancelled %g; status %s.', n, mat2str(frames(:, 3)'));
+end
+
+function assertTouchEvents(w)
+[events, dropped] = inventoryPM('TouchEvents', w);
+assert(size(events, 2) == 5 && dropped >= 0, 'TouchEvents returned %s.', mat2str(size(events)));
 end
 
 function assertMouseEvents(w)

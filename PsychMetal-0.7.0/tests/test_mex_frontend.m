@@ -281,6 +281,8 @@ reject(@() PsychMetalCore('QueueFlip', 0) + 0, 'A queued frame needs a presentat
 reject(@() PsychMetalCore('QueueFlip') + 0, 'QueueFlip takes a time and returns one row.');
 reject(@() PsychMetalCore('QueueResults') + 0, 'QueueResults takes a wait flag and returns one matrix.');
 [events, dropped] = PsychMetal('MouseEvents', wo); assert(isequal(size(events), [0 5]) && dropped == 0);
+[events, dropped] = PsychMetal('TouchEvents', wo); assert(isequal(size(events), [0 5]) && dropped == 0);
+reject(@() PsychMetalCore('TouchEvents') + 0, 'TouchEvents returns events and dropped count.');
 PsychMetal('KbQueueCreate'); PsychMetal('KbQueueStart'); st = PsychMetal('KbQueueStatus'); PsychMetal('KbQueueRelease');
 assert(st.eventTimestamps == 0 && st.eventStamped == 0 && st.pollStamped == 0 && st.maxEventDelayMs == 0);
 PsychMetal('Close', wo);

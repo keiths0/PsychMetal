@@ -17,6 +17,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Operating System :: MacOS",
+    "Operating System :: iOS",
     "Programming Language :: Python :: 3",
     "Programming Language :: C++",
     "Programming Language :: Objective C",
@@ -42,3 +43,11 @@ test-command = "python -c \"import psychmetal; print(psychmetal.version())\""
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
 environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }
+
+# iPhone and iPad: cibuildwheel --platform ios, on a Mac with Xcode. Nothing but
+# the compiler is needed from the Mac at build time. No import test is run:
+# it would need a simulator, and the test that counts is the app on a device.
+[tool.cibuildwheel.ios]
+environment = { IPHONEOS_DEPLOYMENT_TARGET = "15.0" }
+xbuild-tools = []
+test-command = ""

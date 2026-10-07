@@ -304,6 +304,8 @@ def inventory_test(verbose=False):
         reject('queue_flip with a time of zero rejected', lambda: ipm.queue_flip(w, 0))
         check('a flip after queued frames', lambda: ipm.flip(w))
         check('mouse_events returns events and a count', lambda: assert_mouse_events(ipm, w))
+        check('touch_events returns events and a count', lambda: assert_touch_events(ipm, w))
+        check('stop ends the experiment at its next call, and start clears it', lambda: assert_stop(ipm, w))
         check('kb_queue_status says where key times come from', lambda: assert_key_times(ipm))
 
         # ---- two-phase presentation, measurement instruments --------------------
@@ -613,6 +615,29 @@ def assert_cancel(ipm, w, ifi):
     frames = ipm.queue_results(w)
     if not (n == 3 and frames.shape == (3, 4) and (frames[:, 2] == 5).all() and ipm.get_secs() < t0):
         raise AssertionError(f'cancelled {n}; status {frames[:, 2].tolist()}')
+
+
+def assert_touch_events(ipm, w):
+    events, dropped = ipm.touch_events(w)
+    if not (events.ndim == 2 and events.shape[1] == 5 and dropped >= 0):
+        raise AssertionError(f'touch_events returned {events.shape}, dropped {dropped}')
+    return True
+
+
+def assert_stop(ipm, w):
+    done = []
+    thread = ipm.start(lambda a, b=0: a + b, 2, b=3, done=lambda result, error: done.append((result, error)))
+    thread.join()
+    if done != [(5, None)]:
+        raise AssertionError(f'start handed done {done}')
+    ipm.stop()
+    try:
+        ipm.get_mouse(w)
+    except KeyboardInterrupt:
+        return True
+    finally:
+        ipm.start(lambda: None).join()      # starting anything clears the stop
+    raise AssertionError('get_mouse went on after stop')
 
 
 def assert_mouse_events(ipm, w):

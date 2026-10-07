@@ -32,6 +32,15 @@ command line does. run(experiment, threaded=True) calls it on a worker thread
 while the main thread services AppKit, as MATLAB does; Ctrl-C then closes the
 window at the next frame. Other Python threads keep running while flip() and
 wait_secs() block, because the engine releases the GIL.
+
+iPhone and iPad. The same engine and the same functions run inside an app
+there. The main thread belongs to the app, so an experiment is started with
+start(experiment), which returns at once, and ended early with stop(). Fingers
+are the mouse: one is the pointer, a second down is button 1, and a third is
+the Escape key; touch_events reports every finger as it is. Other keys are
+those of an external keyboard.
+What a phone does not have reports as much: one display mode, no cursor, no
+link report, and a display that is always synchronized.
 """
 import atexit as _atexit
 import math as _math
@@ -50,7 +59,8 @@ __all__ = [
     'PsychMetalError', 'run', 'version', 'make_stimulus', 'draw_stimulus',
     'open_window', 'close', 'make_texture', 'update_texture', 'draw_texture', 'draw_textures', 'close_texture',
     'blend_function', 'linearize', 'draw_text', 'text_bounds', 'link_info', 'fill_poly', 'frame_poly', 'clip',
-    'open_offscreen_window', 'queue_flip', 'queue_results', 'queue_cancel', 'mouse_events',
+    'open_offscreen_window', 'queue_flip', 'queue_results', 'queue_cancel', 'mouse_events', 'touch_events',
+    'start', 'stop',
     'prefetch_drawable', 'color_range', 'get_secs', 'wait_secs', 'resolution', 'resolutions',
     'rect', 'window_size', 'get_flip_interval', 'background_color', 'get_mouse', 'set_mouse', 'hide_cursor',
     'show_cursor', 'kb_check', 'kb_queue_create', 'kb_queue_start', 'kb_queue_stop',
@@ -860,6 +870,28 @@ def mouse_events(w):
     return _core.mouse_events()
 
 
+def touch_events(w):
+    """(events, dropped) = touch_events(w): what fingers on a touch screen or a
+    trackpad have done since the last call, or since the window opened, one row
+    each: [time, finger, phase, x, y]. phase is 0 for a finger going down, 1 for
+    each movement the system sampled, 2 for its lifting and 3 for the system
+    taking it over. finger numbers the fingers that are down, from 1. The time
+    is the one the event carries. x and y are in window pixels: on a touch
+    screen where the finger is; on a trackpad the finger's place on the trackpad
+    as a place in the window, the trackpad's corners being the window's.
+
+    On an iPhone or iPad fingers are also the mouse and one key, so that a
+    program written for those runs unchanged: one finger is the pointer
+    (get_mouse), a second finger down is button 1 (get_mouse, mouse_events), and
+    a third is the Escape key (kb_check, the keyboard queue). On a Mac the first
+    call starts listening and returns nothing, as mouse_events does, and the
+    trackpad's contacts arrive only while the pointer is over the window and the
+    program is the active application."""
+    _check_abort()
+    _open(w, 'touch_events')
+    return _core.touch_events()
+
+
 def get_mouse(w):
     """(x, y, buttons) in window pixels; buttons is bool[3]: left, right, centre."""
     _check_abort()
@@ -1412,6 +1444,7 @@ def run(fn, *args, threaded=False, **kwargs):
     AppKit, as under MATLAB. Ctrl-C then makes the next flip, get_mouse or
     kb_check raise KeyboardInterrupt in fn, so its cleanup (close) runs."""
     if not threaded:
+        _abort.clear()
         return fn(*args, **kwargs)
     _check(_core.on_main_thread(), 'run(..., threaded=True) must be called from the main thread.')
     result, error = [None], [None]
@@ -1435,6 +1468,53 @@ def run(fn, *args, threaded=False, **kwargs):
     if error[0] is not None:
         raise error[0]
     return result[0]
+
+
+_started = None     # the thread start() last made
+
+
+def start(fn, *args, done=None, **kwargs):
+    """thread = start(fn, *args, **kwargs) runs fn on a thread of its own and returns
+    at once. It is for a program whose main thread must go on running a loop of
+    its own: an app on an iPhone, where the main thread belongs to the app, or a
+    Mac program with its own window toolkit. When fn ends, done(result, error) is
+    called on that thread; error is what fn raised, or None. A window fn left
+    open is closed first. stop() ends fn at its next frame.
+
+    While fn runs, the main thread must stay free and must leave psychmetal to
+    fn: do not wait for the thread there, and expect a psychmetal call made
+    there to raise rather than wait. One experiment runs at a time."""
+    global _started
+    _check(_started is None or not _started.is_alive(),
+           'An experiment is already running: wait for it to end.')
+
+    def worker():
+        result = error = None
+        before = _S
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as e:      # handed to done, which decides what it is worth
+            error = e
+        if _S is not None and _S is not before:
+            try:
+                close(_S['buffer'])
+            except Exception as e:
+                error = error or e
+        if done is not None:
+            done(result, error)
+
+    _abort.clear()
+    _started = _threading.Thread(target=worker, name='psychmetal-caller', daemon=True)
+    _started.start()
+    return _started
+
+
+def stop():
+    """Make the experiment's next flip, get_mouse, mouse_events, touch_events or
+    kb_check raise KeyboardInterrupt, from any thread: what Ctrl-C does under
+    run(..., threaded=True). The experiment's own cleanup then closes the window.
+    The next start or run clears it."""
+    _abort.set()
 
 
 # Reusable CPU descriptions, not full-frame arrays; each draw sends 15 numbers.

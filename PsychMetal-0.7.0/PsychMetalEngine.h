@@ -484,6 +484,27 @@ struct MouseEvent { double time; int button; bool pressed; double x, y; };
 struct MouseEvents { std::vector<MouseEvent> events; uint64_t dropped; };
 MouseEvents mouseEvents();
 
+// 'TouchEvents'. Fingers on a touch screen or a trackpad, with the times their
+// events carry: each finger's going down (phase 0), every movement the system
+// sampled (1), and its lifting (2) or being taken over by the system (3). finger
+// numbers the fingers that are down, from 1, and a number is free again once its
+// finger has lifted. x, y are in window pixels: on a touch screen where the
+// finger is, on a trackpad its place on the trackpad as a place in the window,
+// the trackpad's corners being the window's. Each call returns the events since
+// the one before, or since the window opened, and how many were lost to a full
+// buffer (8192).
+//
+// On an iPhone or iPad fingers are also the mouse and one key, so that a program
+// written for those runs: one finger is the pointer that mouse() reports, a
+// second finger down is button 1 (mouse() and mouseEvents()), and a third is the
+// Escape key. On a Mac the trackpad already drives the pointer and its click is
+// the button; the contacts are reported besides. There the first call starts
+// listening and returns nothing, as MouseEvents does, and contacts arrive only
+// while the pointer is over the window and the application is the active one.
+struct TouchEvent { double time; int finger; int phase; double x, y; };
+struct TouchEvents { std::vector<TouchEvent> events; uint64_t dropped; };
+TouchEvents touchEvents();
+
 struct KeyState {
     bool anyDown;
     double secs;
