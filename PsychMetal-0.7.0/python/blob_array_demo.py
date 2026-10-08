@@ -127,7 +127,7 @@ def blob_array_demo(seconds=60, contrast=0.5):
         stats = pm.frame_stats(pm.diagnostic(w), ifi)
     finally:
         pm.close(w)
-    print(f"{frames} frames; {stats['achievedHz']:.3f} presentations/s; {stats['skipped']} skipped refreshes.")
+    print(f"{frames} frames; {stats['achievedHz']:.3f} presentations/s; {stats['skipped']} long frame intervals.")
     return dict(ifi=ifi, frequencies=hz, frames=frames, centers=centers.copy(),
                 frame_stats=stats, dropped_touch_events=dropped_events)
 

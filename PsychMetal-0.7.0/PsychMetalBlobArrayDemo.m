@@ -56,7 +56,7 @@ try
  stats=PsychMetalFrameStats(PsychMetal('Diagnostic',w),ifi);
  PsychMetal('Close',w); w=[];
  report=struct('ifi',ifi,'frequencies',hz,'frames',frames,'centers',centers,'frameStats',stats);
- fprintf('%d frames; %.3f presentations/s; %g skipped refreshes.\n',frames,stats.achievedHz,stats.skipped);
+ fprintf('%d frames; %.3f presentations/s; %g long frame intervals.\n',frames,stats.achievedHz,stats.skipped);
 catch e
  if ~isempty(w), try, PsychMetal('Close',w); catch, end; end
  rethrow(e);
