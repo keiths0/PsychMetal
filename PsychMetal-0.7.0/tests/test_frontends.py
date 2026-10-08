@@ -53,6 +53,11 @@ with tempfile.TemporaryDirectory(prefix='psychmetal-frontends-') as temp:
     run([sys.executable, root / 'tests' / 'test_phone_demos.py'],
         env=dict(env, PYTHONPATH=os.pathsep.join([str(temp / 'python'), str(root / 'phone' / 'src')])), cwd=temp)
 
+    run([sys.executable, root / 'tests' / 'test_app_reports.py'],
+        env=dict(env, PYTHONPATH=os.pathsep.join([str(temp / 'python'), str(root / 'phone' / 'src')])), cwd=temp)
+    run([sys.executable, root / 'tests' / 'test_frame_timing.py'],
+        env=dict(env, PYTHONPATH=os.pathsep.join([str(temp / 'python'), str(root / 'phone' / 'src')])), cwd=temp)
+
     run([sys.executable, '-c', "import stimulus_demo; stimulus_demo.stimulus_demo(.1)"], env=dict(env, PM_MOCK_DISPLAY='640x400@60', PM_MOCK_MOUSE='3,320,200'), cwd=temp)
 
     # --- Octave ---------------------------------------------------------------

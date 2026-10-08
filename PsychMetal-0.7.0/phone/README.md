@@ -12,6 +12,8 @@ one, since the window keeps the way the phone was held when it opened.
 
 **Blob array** uses direct one-finger dragging: touch a blob, move it, and lift to leave it. Three fingers stop it. Its layout fits portrait or landscape.
 
+**Frame timing** runs three short conditions and opens an in-app graph and statistics report when finished. No files are saved. See [FRAME-TIMING.md](FRAME-TIMING.md).
+
 ## Building
 
 From this folder, on a Mac with Xcode and its iOS platform installed.

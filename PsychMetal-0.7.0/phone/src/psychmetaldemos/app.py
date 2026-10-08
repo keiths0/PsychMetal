@@ -39,6 +39,8 @@ class Kept(io.TextIOBase):
 class PsychMetalDemos(toga.App):
     def startup(self):
         self.buttons = []
+        self.last_report = None
+        self.report_page = None
         listing = toga.Box(style=Pack(direction=COLUMN))
         # A label is one line however long: lines are broken here, short enough
         # for a phone held upright.
@@ -61,6 +63,10 @@ class PsychMetalDemos(toga.App):
         page = toga.Box(style=Pack(direction=COLUMN))
         page.add(toga.ScrollContainer(content=listing, horizontal=False, style=Pack(flex=2)))
         page.add(self.printed)
+        self.report_button = toga.Button("View last timing report", on_press=self.show_report, enabled=False,
+                                         style=Pack(margin=8))
+        page.add(self.report_button)
+        self.page = page
         self.main_window = toga.MainWindow(title=self.formal_name)
         self.main_window.content = page
         self.main_window.show()
@@ -73,6 +79,7 @@ class PsychMetalDemos(toga.App):
     def start(self, title, module, function, arguments):
         for button in self.buttons:
             button.enabled = False
+        self.report_button.enabled = False
         self.printed.value = f'{title}: running...'
         self.kept = Kept(sys.stdout), Kept(sys.stderr)
         self.streams = sys.stdout, sys.stderr
@@ -82,11 +89,11 @@ class PsychMetalDemos(toga.App):
             return getattr(importlib.import_module(module), function)(**arguments)
 
         try:
-            pm.start(demo, done=lambda result, error: self.finished(title, error))
+            pm.start(demo, done=lambda result, error: self.finished(title, error, result))
         except Exception as error:
             self.finished(title, error)
 
-    def finished(self, title, error):
+    def finished(self, title, error, result=None):
         """Called on the demo's thread: the page is changed on the main one."""
         sys.stdout, sys.stderr = self.streams
         text = title
@@ -97,12 +104,32 @@ class PsychMetalDemos(toga.App):
             elif error is not None:
                 text += '\n\n' + ''.join(traceback.format_exception(error)[-8:]).strip()
         finally:
-            self.loop.call_soon_threadsafe(self.show, text.strip())
+            report = result.get("report_html") if isinstance(result, dict) else None
+            self.loop.call_soon_threadsafe(self.show, text.strip(), report if isinstance(report, str) else None)
 
-    def show(self, text):
+    def show(self, text, report=None):
         self.printed.value = text
         for button in self.buttons:
             button.enabled = True
+        if report:
+            self.last_report = report
+            self.report_page = None
+            self.show_report()
+        self.report_button.enabled = self.last_report is not None
+
+    def show_report(self, widget=None, **kwargs):
+        if self.last_report is None:
+            return
+        if self.report_page is None:
+            web = toga.WebView(style=Pack(flex=1))
+            web.set_content("about:blank", self.last_report)
+            self.report_page = toga.Box(style=Pack(direction=COLUMN))
+            self.report_page.add(toga.Button("Back to demos", on_press=self.back_to_demos, style=Pack(margin=8)))
+            self.report_page.add(web)
+        self.main_window.content = self.report_page
+
+    def back_to_demos(self, widget=None, **kwargs):
+        self.main_window.content = self.page
 
 
 def main():

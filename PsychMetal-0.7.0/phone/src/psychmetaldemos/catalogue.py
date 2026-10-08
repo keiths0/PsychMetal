@@ -23,6 +23,8 @@ GROUPS = [
         ('Keyboard queue', 'kb_queue_demo', 'kb_queue_demo', {}, 'Needs a keyboard. Fifteen seconds.'),
     ]),
     ('Tests', [
+        ('Frame timing', 'psychmetaldemos.frame_timing', 'frame_timing', {},
+         'About 40 seconds: patch, still array, then drag a blob. An in-app graph and report follow. Three fingers ends early.'),
         ('Readback test', 'readback_test', 'readback_test', {},
          'What the GPU draws, pixel for pixel. About six seconds. Its 10-bit checks fail here: a phone\'s window '
          'is 8-bit.'),
