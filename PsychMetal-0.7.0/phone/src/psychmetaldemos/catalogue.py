@@ -1,7 +1,7 @@
 """What the app can run: (title, module, function, arguments, a line about it).
 
 The first two groups are the psychmetal package's own files, from its python
-folder, as they are: nothing in them knows about a phone. They were written
+folder. Blob array uses direct one-finger dragging. The older demos were written
 for a mouse and a keyboard, which on a phone are fingers: one finger is the
 pointer, a second finger is the click, a third is Escape.
 """
@@ -12,6 +12,8 @@ GROUPS = [
         ('Drifting Gabors', 'gabor_demo', 'gabor_demo', {}, 'Two fingers stop it.'),
         ('Textures', 'texture_demo', 'texture_demo', {}, 'Two fingers stop it.'),
         ('Dot motion', 'dot_demo', 'dot_demo', {}, 'Two fingers stop it.'),
+        ('Blob array', 'blob_array_demo', 'blob_array_demo', {},
+         'Hold one finger on a blob to drag; lift to leave it. Sixty seconds, or three fingers.'),
         ('Blob', 'blob_demo', 'blob_demo', {}, 'It follows a finger. Two fingers stop it.'),
         ('Rectangle', 'mouse_rect_demo', 'mouse_rect_demo', {}, 'It follows a finger. Two fingers stop it.'),
         ('Noise through a mask', 'stimulus_demo', 'stimulus_demo', {},

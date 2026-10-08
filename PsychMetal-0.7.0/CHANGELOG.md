@@ -1,7 +1,8 @@
 # Changelog
 
-## 0.7.0 — development
+## 0.7.0 — 2026-10-07
 
+- New `PsychMetalBlobArrayDemo` and `python/blob_array_demo.py`: labelled Gaussian blobs counterphase from refresh/2 down to about 1 Hz. Press-hold dragging with a mouse or one finger, release to stop, and intentional overlap. The phone app lists the demo. Automated checks cover Nyquist phase, layouts and mouse/finger interaction; visual acceptance is pending. See BLOB-ARRAY.md.
 - Add MakeStimulus and DrawStimulus, with matching Python functions, for reusable GPU noise/grating descriptions.
 - Separate carrier scale from uploaded masks and built-in rectangle, ellipse and Gaussian apertures.
 - Snapshot per-draw parameters and retain mask texture versions through GPU completion.

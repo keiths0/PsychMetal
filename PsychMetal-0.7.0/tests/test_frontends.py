@@ -49,6 +49,7 @@ with tempfile.TemporaryDirectory(prefix='psychmetal-frontends-') as temp:
     env = dict(os.environ, PYTHONPATH=str(temp / 'python'))
     run([sys.executable, root / 'tests' / 'test_python_frontend.py'], env=env, cwd=temp)
     run([sys.executable, root / 'tests' / 'test_python_demos.py'], env=env, cwd=temp)
+    run([sys.executable, root / 'tests' / 'test_blob_array.py'], env=env, cwd=temp)
     run([sys.executable, root / 'tests' / 'test_phone_demos.py'],
         env=dict(env, PYTHONPATH=os.pathsep.join([str(temp / 'python'), str(root / 'phone' / 'src')])), cwd=temp)
 
@@ -67,11 +68,12 @@ with tempfile.TemporaryDirectory(prefix='psychmetal-frontends-') as temp:
         mroot = temp / 'm'
         mroot.mkdir()
         for name in ('PsychMetal.m', 'PsychMetalInventoryTest.m', 'PsychMetalReadbackTest.m', 'PsychMetalDotDemo.m',
-                     'PsychMetalFrameStats.m', 'PsychMetalDisplayTest.m', 'PsychMetalGammaCalibration.m', 'PsychMetalStimulusDemo.m'):
+                     'PsychMetalBlobArrayDemo.m', 'PsychMetalFrameStats.m', 'PsychMetalDisplayTest.m', 'PsychMetalGammaCalibration.m', 'PsychMetalStimulusDemo.m'):
             shutil.copy2(root / name, mroot / name)
         # The MATLAB inventory test in full, and the dot demo's sprite path (one
         # DrawTextures call per frame), each stopped by the scripted click.
-        programs = ("setenv('PM_MOCK_MOUSE','3,320,200'); PsychMetalStimulusDemo(.1); setenv('PM_MOCK_MOUSE','-1,0,0'); " "r = PsychMetalInventoryTest(); assert(r.failed == 0, 'inventory failures'); "
+        programs = ("setenv('PM_MOCK_MOUSE','-1,0,0'); r=PsychMetalBlobArrayDemo(.1); assert(r.frames==6 && numel(r.frequencies)==6 && abs(r.frequencies(end)-.9375)<1e-10); "
+                    "setenv('PM_MOCK_MOUSE','3,320,200'); PsychMetalStimulusDemo(.1); setenv('PM_MOCK_MOUSE','-1,0,0'); " "r = PsychMetalInventoryTest(); assert(r.failed == 0, 'inventory failures'); "
                     "r = PsychMetalReadbackTest(); assert(r.failed == 0 && r.checks == 46, 'readback failures'); "
                     "setenv('PM_MOCK_MOUSE', '25,0,0'); PsychMetalDotDemo(1); "
                     "[~, d] = PsychMetalCore('Diagnostic'); assert(d.texturesDrawn == 400 * 24); "

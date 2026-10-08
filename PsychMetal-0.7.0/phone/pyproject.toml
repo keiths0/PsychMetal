@@ -23,6 +23,7 @@ long_description = """Runs the demos and tests that come with psychmetal, unchan
 sources = [
     "src/psychmetaldemos",
     "../python/blob_demo.py",
+    "../python/blob_array_demo.py",
     "../python/display_test.py",
     "../python/dot_demo.py",
     "../python/gabor_demo.py",

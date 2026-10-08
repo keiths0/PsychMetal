@@ -10,6 +10,8 @@ is Escape. So "click to stop" is a tap with a second finger. Some of them were
 laid out for a screen wider than it is tall: turn the phone before starting
 one, since the window keeps the way the phone was held when it opened.
 
+**Blob array** uses direct one-finger dragging: touch a blob, move it, and lift to leave it. Three fingers stop it. Its layout fits portrait or landscape.
+
 ## Building
 
 From this folder, on a Mac with Xcode and its iOS platform installed.

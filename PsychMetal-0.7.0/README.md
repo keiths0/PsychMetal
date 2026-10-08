@@ -1,10 +1,10 @@
-# PsychMetal 0.7.0 — GPU stimuli development build
+# PsychMetal 0.7.0
 
 New reusable GPU noise/grating recipes, independent image/ellipse/Gaussian masks and per-draw phase, frequency, orientation, contrast, seed and opacity. See [GPU-STIMULI.md](GPU-STIMULI.md) for the API, demos, conventions and validation limits.
 
-This is an unpublished development build based on 0.6.0. All three native modules build; live GPU pixels and timing still require acceptance. Start with `PsychMetalStimulusDemo` or `python/stimulus_demo.py`. Use the 0.7.0 folder in the installation examples below. Historical validation results below apply to their named versions, not this build.
+The release adds a Python engine port to iPhone and iPad and an app that runs the demos ([phone/](phone/README.md)). It has run on an iPhone 18 Pro; its timing has not been measured. See [IOS.md](IOS.md). GPU stimulus hardware acceptance and timing remain pending. Historical validation below applies only to its named versions.
 
-This build also holds a port of the engine to iPhone and iPad, for Python only, and an app that runs this package's demos there ([phone/](phone/README.md)). It builds and runs on an iPhone 18 Pro; nothing on it has been timed. See [IOS.md](IOS.md).
+New: **[draggable blob array](BLOB-ARRAY.md)**, `PsychMetalBlobArrayDemo` or `python/blob_array_demo.py`. Frequencies halve from half the display refresh rate down to about 1 Hz; hold the mouse button or one finger to drag a blob, and release to leave it.
 
 ## What changed in 0.6.0
 
@@ -132,7 +132,7 @@ The included Python extension is for Python 3.14; any other Python needs `make p
 Keep the entire folder together. In a fresh Octave or MATLAB session:
 
 ```matlab
-addpath(fullfile(getenv('HOME'),'Desktop','PsychMetal','PsychMetal-0.6.0'),'-begin');
+addpath(fullfile(getenv('HOME'),'Desktop','PsychMetal','PsychMetal-0.7.0'),'-begin');
 which PsychMetalCore
 PsychMetalMinimalDemo(10)
 ```
@@ -145,7 +145,7 @@ Adjust the path if installed elsewhere. Add only this folder, **not genpath**: t
 python3 -m venv ~/venvs/psychmetal       # once: a virtual environment
 source ~/venvs/psychmetal/bin/activate   # in each new Terminal window
 pip install psychmetal                   # from PyPI
-pip install ./PsychMetal-0.6.0           # or from a clone of this repository
+pip install ./PsychMetal-0.7.0           # or from a clone of this repository
 ```
 
 Homebrew's Python refuses packages installed outside a virtual environment, hence the first two lines. pip builds the extension for whichever Python runs it, with Apple's clang. The 0.5.1 wheel installed from PyPI passed the full Python inventory test (169/169) on the tested display, under Python 3.14. Alternatively, put this folder's `python/` on `PYTHONPATH` and use the included Python 3.14 extension, or `make python`.
@@ -220,7 +220,7 @@ These open full-screen windows. Motion-test panels must move right together with
 
 ## Package
 
-The release zip is this folder as tagged, binaries included. `make package` is for a checksummed payload: it verifies RELEASE-MANIFEST.txt and SHA256SUMS and stages the **existing** tested files into dist/PsychMetal, without rebuilding. No manifest has been made for 0.6.0.
+The release zip is this folder as tagged, binaries included. `make package` is for a checksummed payload: it verifies RELEASE-MANIFEST.txt and SHA256SUMS and stages the **existing** tested files into dist/PsychMetal, without rebuilding. No manifest has been made for 0.7.0; use the release ZIP and its separate SHA-256 checksum.
 
 ## License and attribution
 

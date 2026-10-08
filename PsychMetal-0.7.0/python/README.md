@@ -2,6 +2,8 @@
 
 Native Metal stimulus presentation on Apple silicon Macs, from Python, with an interface resembling Psychtoolbox's Screen. There is no OpenGL anywhere in the path. The same engine serves [PsychMetal](https://github.com/keiths0/PsychMetal) for MATLAB and Octave.
 
+Version 0.7.0 also supports iPhone/iPad through a separately built app: see [iOS instructions](https://github.com/keiths0/PsychMetal/blob/main/PsychMetal-0.7.0/IOS.md). The GitHub release includes `blob_array_demo.py`, a labelled counterphasing array with mouse or one-finger dragging.
+
 Install it into a virtual environment. Homebrew's Python (and any Python following PEP 668) refuses packages installed outside one:
 
 ```bash

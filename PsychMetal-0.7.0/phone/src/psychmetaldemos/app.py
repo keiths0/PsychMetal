@@ -46,7 +46,7 @@ class PsychMetalDemos(toga.App):
             return toga.Label(textwrap.fill(text, 46), style=Pack(margin=(0, 16, 4, 16), font_size=11))
 
         listing.add(lines(f'psychmetal {pm.version()}, Python {platform.python_version()}, numpy {np.__version__}'))
-        listing.add(lines('One finger is the pointer, a second is the click, a third is Escape.'))
+        listing.add(lines('Usually: one finger is the pointer, a second clicks, a third is Escape. Blob array: hold one finger to drag; lift to release.'))
         for group, entries in GROUPS:
             listing.add(toga.Label(group, style=Pack(margin=(14, 12, 2, 12), font_weight='bold')))
             for title, module, function, arguments, about in entries:

@@ -1,6 +1,6 @@
-# GPU stimulus system — 0.7.0 development build
+# GPU stimulus system — 0.7.0
 
-This is a separate development version based on published 0.6.0. It is not a published release. The native modules build for Octave, MATLAB and Python; live rendering and timing require hardware acceptance before use in experiments.
+Added in 0.7.0. The native modules build for Octave, MATLAB and Python; live rendering and timing require hardware acceptance before use in experiments.
 
 ## What is new
 
