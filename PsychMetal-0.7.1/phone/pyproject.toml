@@ -1,0 +1,53 @@
+# PsychMetal Demos: the psychmetal package's own demos and tests in an app on an
+# iPhone or iPad. Built with Briefcase (https://briefcase.beeware.org); see
+# README.md for the steps.
+#
+# The demos are the files in ../python, as they are. psychmetal for iOS is not
+# on PyPI: its wheels are built from the folder above into ./wheels and found
+# there.
+[tool.briefcase]
+project_name = "PsychMetal Demos"
+bundle = "io.github.keiths0"
+version = "0.7.1"
+url = "https://github.com/keiths0/PsychMetal"
+license = "MIT"
+license-files = ["LICENSE"]
+author = "Keith Schneider"
+author_email = "keith@alumni.caltech.edu"
+
+[tool.briefcase.app.psychmetaldemos]
+formal_name = "PsychMetal Demos"
+description = "Explore visual perception through interactive patterns and motion"
+icon = "resources/icon"
+splash_background_color = "#172231"
+long_description = """Explore contrast, moving patterns, Gaussian blobs and hidden boundaries through interactive educational demonstrations.
+"""
+sources = [
+    "src/psychmetaldemos",
+    "../python/minimal_demo.py",
+    "../python/mouse_rect_demo.py",
+    "../python/texture_demo.py",
+    "../python/stimulus_demo.py",
+    "../python/blob_demo.py",
+    "../python/blob_array_demo.py",
+    "../python/dot_demo.py",
+    "../python/gabor_demo.py",
+    "../python/noise_demo.py",
+]
+requires = [
+    "numpy",
+]
+
+[tool.briefcase.app.psychmetaldemos.iOS]
+# Briefcase's default of 13 is refused by current Xcode; 17 is this app's choice.
+# psychmetal itself is built for iOS 15 and later.
+min_os_version = "17.0"
+requires = [
+    "toga-iOS~=0.5.7",
+    "psychmetal==0.7.1",
+]
+requirement_installer_args = ["--find-links", "./wheels"]
+# Without this an iPhone holds the app to 60 Hz whatever its display can do.
+info."CADisableMinimumFrameDurationOnPhone" = true
+# Opt into iOS Game Mode; verify activation and compare on/off on the device.
+info."GCSupportsGameMode" = true

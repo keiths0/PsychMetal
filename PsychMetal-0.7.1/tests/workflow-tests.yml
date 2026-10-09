@@ -1,0 +1,48 @@
+name: Tests
+
+# The regression suite that needs no display. Copy this file to
+# .github/workflows/tests.yml at the top of the repository.
+#
+# linux: the whole GPU-free suite, with Octave: PsychMetal.m and the MEX and
+#   Python front ends against the scripted engine (tests/mock_engine.cpp), the
+#   inventory, readback and display tests in both languages, and the engine
+#   type-checked against tests/macstubs.
+# macos: the real engine compiled against the real SDK (make python), the same
+#   suite without Octave, the Python extension loaded headless, and the Metal
+#   shaders compiled and run offscreen where the runner has a GPU.
+#
+# Neither job opens a window: timing and what reaches the display are checked
+# on a Mac with a display, by the hardware tests in the README.
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  PACKAGE_DIR: PsychMetal-0.6.0
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install clang, Octave and numpy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libomp-dev octave octave-dev python3-dev python3-numpy
+      - name: Run the suite
+        run: python3 "$PACKAGE_DIR/tests/run_tests.py"
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy
+      - name: Build the engine and the Python front end
+        run: make -C "$PACKAGE_DIR" python PYTHON=python
+      - name: Run the suite
+        run: python "$PACKAGE_DIR/tests/run_tests.py"

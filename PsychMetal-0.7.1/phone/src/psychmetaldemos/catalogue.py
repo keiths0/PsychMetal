@@ -1,0 +1,41 @@
+"""Public educational demonstrations. Developer checks remain in the toolbox."""
+GROUPS = [
+    ('Shapes and textures', [
+        ('One rectangle', 'minimal_demo', 'minimal_demo', {},
+         'A red rectangle on a dark background: the simplest drawing demonstration. Runs for three seconds. Tap with three fingers to return sooner.'),
+        ('Moving rectangle', 'mouse_rect_demo', 'mouse_rect_demo', {},
+         'Move a finger to position a framed rectangle and crosshair. This is the mouse rectangle demo adapted to touch. Runs for 20 seconds.'),
+        ('Textures', 'texture_demo', 'texture_demo', {},
+         'Compare a rotating colour texture, tinted copies of the same image, and a pulsing soft spot that follows your finger. The panels adapt to portrait or landscape. Runs for 20 seconds.'),
+    ]),
+    ('Contrast and motion', [
+        ('Blob array', 'blob_array_demo', 'blob_array_demo', {},
+         'Compare soft spots that alternate between light and dark at different rates. Hold one finger on a spot to drag it; lift to leave it. After a brief gray calibration, the labels show frequencies based on the measured refresh rate. Every cycle samples both light and dark peaks. Up to 60 seconds. Contains rapid flicker.'),
+        ('A pulsing spot', 'blob_demo', 'blob_demo', {},
+         'A soft Gaussian spot brightens and darkens once per second. Move a finger to reposition it. Watch its edges blend into the background. Runs for 20 seconds.'),
+        ('Drifting stripes', 'gabor_demo', 'gabor_demo', {},
+         'Watch stripes move inside soft-edged windows called Gabor patches. Compare their orientations and local motion. Runs for 20 seconds.'),
+        ('Moving dots', 'dot_demo', 'dot_demo', {},
+         'Watch a field of moving dots. Notice how individual dots combine into a motion pattern. Runs for a short demonstration.'),
+    ]),
+    ('Noise and hidden boundaries', [
+        ('Noise through a mask', 'stimulus_demo', 'stimulus_demo', {},
+         'Move a finger to position a soft-edged patch over coloured noise. Touch with a second finger to switch the patch between noise and drifting stripes. Three fingers returns to the menu. Runs for 20 seconds.'),
+        ('Changing noise', 'noise_demo', 'noise_demo', {},
+         'Each frame contains a new random pattern. Compare the texture of the noise with the smoother patterns in the other demonstrations. Contains rapid changes in brightness.'),
+        ('Hidden ring — fine noise', 'psychmetaldemos.noise_annulus', 'noise_annulus', dict(scroll=0, grain=1),
+         'The hidden ring with one-pixel noise cells inside a centered square; move it into the black margins to reveal it. Move a finger to reveal the boundary; a second finger switches to stripes. Runs for 20 seconds.'),
+        ('Moving ring — fine noise', 'psychmetaldemos.noise_annulus', 'noise_annulus', dict(scroll=1, grain=1),
+         'One-pixel noise scrolls inside a centered square with black outside. Move the ring into the black margins. A second finger switches between noise and stripes. Runs for 20 seconds.'),
+        ('Hidden ring', 'psychmetaldemos.noise_annulus', 'noise_annulus', dict(scroll=0, grain=3),
+         'Move a finger to reveal a ring of noise against another noise pattern in a centered square. Move the ring into the black margins. Notice how motion reveals its boundary. A second finger switches the ring to stripes. Runs for 20 seconds.'),
+        ('Moving hidden ring', 'psychmetaldemos.noise_annulus', 'noise_annulus', dict(scroll=1, grain=3),
+         'Noise scrolls in a centered square, with black outside. Move the ring across its edge with a finger. Compare this with Hidden ring. A second finger switches the ring to stripes. Runs for 20 seconds.'),
+        ('Ring of rectangles', 'psychmetaldemos.finger_ring', 'finger_ring', {},
+         'Move one finger and watch a ring of small rectangles follow it and rotate. Runs for 15 seconds.'),
+    ]),
+    ('Optional diagnostics', [
+        ('Frame timing', 'psychmetaldemos.frame_timing', 'frame_timing', {},
+         'With Diagnostic mode on, compare frame intervals for a flashing patch and two blob-array conditions. A graph follows. This describes software presentation timing, not a calibrated measurement of emitted light. About 40 seconds; contains rapid flicker.'),
+    ]),
+]

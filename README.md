@@ -2,19 +2,30 @@
 
 Native Metal stimulus presentation for Apple silicon Macs with MATLAB, Octave and Python interfaces, and for iPhone/iPad with Python. Uses supported Screen-style argument formats; it is not a complete Psychtoolbox replacement. No OpenGL or Vulkan presentation backend is used.
 
-## Current version: 0.7.0
+## Current version: 0.7.1
 
-- [Download the 0.7.0 release](https://github.com/keiths0/PsychMetal/releases/tag/v0.7.0)
-- [Installation, build instructions and demos](PsychMetal-0.7.0/README.md)
-- [Changelog](PsychMetal-0.7.0/CHANGELOG.md)
-- [Design: one engine, MATLAB/Octave and Python front ends](PsychMetal-0.7.0/DESIGN-0.5.0.md)
-- [Keyboard queue and input event times](PsychMetal-0.7.0/KEYBOARD-QUEUE.md)
+- [Download the 0.7.1 release](https://github.com/keiths0/PsychMetal/releases/tag/v0.7.1)
+- [Installation, build instructions and demos](PsychMetal-0.7.1/README.md)
+- [Changelog](PsychMetal-0.7.1/CHANGELOG.md)
+- [Design: one engine, MATLAB/Octave and Python front ends](PsychMetal-0.7.1/DESIGN-0.5.0.md)
+- [Keyboard queue and input event times](PsychMetal-0.7.1/KEYBOARD-QUEUE.md)
 
-Version 0.7.0 adds reusable GPU noise and gratings with independent masks, a Python engine port and demo app for iPhone/iPad, timestamped touch events, and a draggable array of counterphasing Gaussian blobs. See [GPU stimuli](PsychMetal-0.7.0/GPU-STIMULI.md), [iOS support and limitations](PsychMetal-0.7.0/IOS.md), and [the blob-array demo](PsychMetal-0.7.0/BLOB-ARRAY.md).
+Version 0.7.1 optimizes frame readback, adds reusable Python output arrays,
+uses measured-rate frame-count sampling for the draggable blob array, and
+provides the phone demo gallery with scrollable timing reports. iPhone uses
+CAMetalDisplayLink by default. See [presentation](PsychMetal-0.7.1/DISPLAY-LINK.md),
+[readback](PsychMetal-0.7.1/READBACK-0.7.1.md), and [validation](PsychMetal-0.7.1/VALIDATION.md).
 
-The iPhone port has run on an iPhone 18 Pro, but its timing has not been measured. The new blob array has automated waveform, layout and input tests; visual acceptance on a Mac and phone remains to be done. Historical display-validation results belong to the versions that report them. Metal timestamps have not been validated with a photodiode. The GitHub ZIP includes Mac MATLAB/Octave binaries; Python Mac wheels are published to PyPI. The iOS app and wheels are built separately using the [phone instructions](PsychMetal-0.7.0/phone/README.md).
+The user accepted the phone visuals and reported no long intervals after
+stopping Xcode debugging. Metal timestamps have not been validated with a
+photodiode. The GitHub ZIP includes Mac MATLAB/Octave binaries and phone source;
+separate iOS wheels are release assets. Python Mac wheels follow the repository’s
+existing PyPI release workflow. The phone app is not yet distributed through
+the App Store; see [phone build instructions](PsychMetal-0.7.1/phone/README.md).
 
 ## Previous releases
+
+Version 0.7.0 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.7.0), [changelog](PsychMetal-0.7.0/CHANGELOG.md)) introduced the iPhone/iPad Python port, reusable GPU carriers and masks, touch events and the draggable Gaussian array.
 
 Version 0.6.0 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.6.0), [changelog](PsychMetal-0.6.0/CHANGELOG.md)) added linear-light drawing, 10-bit frames, text, polygons, clipping, offscreen targets, queued presentation and input event timestamps.
 
@@ -34,7 +45,7 @@ Add only one version folder to your host path, not its tests/mock subdirectory. 
 
 ## History and comparisons
 
-The 0.4.3 changelog retains 0.4.1's demo/signature fixes, included in the published 0.4.2 package. Historical version folders and [development reports](docs/) remain available; their measurements and implementation descriptions refer to their original versions. Optional Psychtoolbox comparisons are in [comparisons/](PsychMetal-0.7.0/comparisons/).
+The 0.4.3 changelog retains 0.4.1's demo/signature fixes, included in the published 0.4.2 package. Historical version folders and [development reports](docs/) remain available; their measurements and implementation descriptions refer to their original versions. Optional Psychtoolbox comparisons are in [comparisons/](PsychMetal-0.7.1/comparisons/).
 
 ## License and citation
 
