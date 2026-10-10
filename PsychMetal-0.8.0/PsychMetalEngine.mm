@@ -3864,8 +3864,12 @@ uint64_t pm::createShader(const std::string &source) {
         NSString *text=[[NSString alloc]initWithBytes:full.data() length:full.size() encoding:NSUTF8StringEncoding];
         if(!text)fail("Shader source must be valid UTF-8.");
         NSError *error=nil;MTLCompileOptions *options=[MTLCompileOptions new];
+        // A runtime availability check alone cannot compile against Xcode 15.
+#if (defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000) || (defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 180000)
         if(@available(macOS 15.0,iOS 18.0,*))options.mathMode=MTLMathModeSafe;
-        else {
+        else
+#endif
+        {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
             options.fastMathEnabled=NO;

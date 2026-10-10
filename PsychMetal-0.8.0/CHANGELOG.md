@@ -48,6 +48,7 @@ scripted presenter and native sanitizer suite; physical-device limits are in VAL
   cancellations, late and missing frames, input during playback, a main-thread
   experiment beside a reading thread, exactly hard mask edges (GPU test).
 
+- Compile custom shaders with safe math on both older and current Xcode SDKs.
 - Serialize native input readers to protect diagnostic counters and lazy touch
   listener installation while preserving concurrent input during playback.
 - Make Mac Python builds explicitly ARM64, including when built with a

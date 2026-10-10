@@ -67,7 +67,7 @@ result reports what the display did, from its own reports of each frame:
 | `late` | Samples shown more than half a refresh after one refresh per sample since the last shown sample: the sample before stayed on screen too long. |
 | `lateRefreshes` | The refreshes those cost. |
 | `firstLateSample` | The first late sample: zero-based in Python, one-based in MATLAB/Octave; NaN if none. |
-| `meanSampleMs` | How long a sample actually stayed on screen, on average. The stimulus's actual frequency is its nominal frequency × (refresh period / `meanSampleMs`). |
+| `meanSampleMs` | How long a sample actually stayed on screen, on average. The stimulus's actual frequency is its nominal frequency × (refresh period in milliseconds / `meanSampleMs`). |
 | `longestIntervalMs` | The longest time between two shown samples. |
 | `expectedRefreshHz` | The engine's refresh estimate when playback started, from which `late` is judged. |
 

@@ -11,8 +11,17 @@ import threading
 from types import SimpleNamespace, ModuleType
 from unittest.mock import patch
 root=Path(__file__).resolve().parents[1];sys.path[:0]=[str(root/'python'),str(root/'phone/src')]
-if not list((root/'python'/'psychmetal').glob('_psychmetal*')):
-    print('No built Python extension (make python on a Mac): phone report test SKIPPED.');sys.exit(0)
+# Report/UI contracts are portable; a committed Mac binary is not importable
+# on Linux (nor by a different Python ABI). Keep testing the portable module.
+from importlib.machinery import EXTENSION_SUFFIXES
+if not any((root/'python/psychmetal'/('_psychmetal'+suffix)).exists() for suffix in EXTENSION_SUFFIXES):
+    portable=ModuleType('psychmetal');portable.__path__=[str(root/'python/psychmetal')]
+    portable._environment_observer=None
+    portable._core=SimpleNamespace(environment=lambda:{'engineVersion':'test-double'})
+    portable._np=SimpleNamespace(__version__='test-double')
+    portable.diagnostic=lambda w:{'summary':{}}
+    sys.modules['psychmetal']=portable
+    print('Portable phone report tests use an engine metadata double; native ABI acceptance is separate.')
 from psychmetaldemos.reports import Reports
 from psychmetaldemos.lifecycle import MainThreadCollections
 from psychmetaldemos.sharing import ShareSheet

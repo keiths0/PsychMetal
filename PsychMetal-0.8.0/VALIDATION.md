@@ -77,3 +77,8 @@ Python live controls remain supported. All shipped Mac/iOS modules are rebuilt
 from these final sources. Package manifests/checksums are regenerated afterward.
 GitHub wheel builds target 0.8.0; PyPI publication requires a separate explicit
 manual workflow option, avoiding an unintended PyPI upload during GitHub release.
+
+GitHub's macOS-14/Xcode-15.4 build exposed a newer-SDK-only shader compile
+option. Added compile-time SDK guards plus the older fastMathEnabled=false
+fallback; runtime availability checks alone were insufficient. Independent
+Linux/macOS CI must pass on the final commit before publication.
