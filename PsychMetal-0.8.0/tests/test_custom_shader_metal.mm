@@ -12,8 +12,12 @@ struct U {float dst[4],params[16],viewport[4],maskA[4],maskB[4];};
 static_assert(sizeof(U)==128);
 int main(){@autoreleasepool{
  auto d=MTLCreateSystemDefaultDevice();if(!d){puts("SKIP: no Metal device available.");return 77;}
- auto options=[MTLCompileOptions new];if(@available(macOS 15.0,*))options.mathMode=MTLMathModeSafe;
- else {
+ auto options=[MTLCompileOptions new];
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
+ if(@available(macOS 15.0,*))options.mathMode=MTLMathModeSafe;
+ else
+#endif
+ {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
  options.fastMathEnabled=NO;
