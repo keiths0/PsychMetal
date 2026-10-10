@@ -62,7 +62,7 @@ r, said = quiet(ring_check.ring_check)
 check(r == dict(wrong_in_the_ring=0, wrong_outside=0) and 'drawn exactly' in said, 'ring_check reads its frames back')
 
 # The rectangles noise_annulus draws, with a pointer that moves as it is told.
-drawn, real_draw, real_mouse = [], pm.draw_stimulus, pm.get_mouse
+drawn, real_draw, real_mouse, real_keys = [], pm.draw_stimulus, pm.get_mouse, pm.kb_check
 
 
 def spy(w, stimulus, rect=None, mask=None, **overrides):
@@ -79,11 +79,19 @@ try:
             path = iter([(400.0 - min(max(k - 5, 0), 8), 300.0 + k // 3, np.zeros(3, bool)) for k in range(1000)])
             pm.get_mouse = lambda w: next(path)
             drawn.clear()
-            r, said = quiet(noise_annulus.noise_annulus, 0.4, scroll, grain)
+            # Stop after 25 submitted frames, rather than assuming a shared
+            # runner can always present 25 frames within 0.4 wall-clock seconds.
+            def stop_after_frames():
+                pressed, stamp, keys = real_keys()
+                keys = keys.copy()
+                keys[pm.kb_name('ESCAPE')] = sum(not masked for _, masked in drawn) >= 25
+                return bool(keys.any()), stamp, keys
+            pm.kb_check = stop_after_frames
+            r, said = quiet(noise_annulus.noise_annulus, 5.0, scroll, grain)
             back = [rect for rect, masked in drawn if not masked]
             ring = [rect for rect, masked in drawn if masked]
             name = f'noise_annulus(scroll={scroll}, grain={grain})'
-            check(r['frames'] == 25 and len(back) == 25 and len(ring) == 25, f'{name} draws each frame once')
+            check(r['frames'] == 25 and r['ended_by'] == 'Escape' and len(back) == 25 and len(ring) == 25, f'{name} draws each frame once')
             check(all((b[0] - a[0], b[2] - a[2]) == (scroll, scroll) for a, b in zip(back, back[1:])),
                   f'{name}: the background moves {scroll} a frame')
             check(all(a[0] <= 100 and a[2] >= 700 and a[1] == 0 and a[3] == 600 for a in back), f'{name}: covers the centered square')
@@ -97,7 +105,7 @@ try:
                 check(moved[0] == (0.0, 0.0) and any(m != (0.0, 0.0) for m in moved),
                       f'{name}: the ring is still until the pointer moves it')
 finally:
-    pm.draw_stimulus, pm.get_mouse = real_draw, real_mouse
+    pm.draw_stimulus, pm.get_mouse, pm.kb_check = real_draw, real_mouse, real_keys
 print(f'PASS: {passed} checks of the phone app\'s list and its demos against the scripted engine.')
 
 # Keep the phone catalogue in parity with every standalone Python demo.

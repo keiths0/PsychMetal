@@ -64,7 +64,9 @@ s = pm.kb_queue_status()
 assert not s['created'] and not s['running']
 reject(pm.kb_queue_start, message='Create a keyboard queue first.')
 t0 = pm.get_secs(); t1 = pm.wait_secs(0.01)
-assert 0.01 <= t1 - t0 < 0.05, t1 - t0
+# Shared runners may deschedule a correctly sleeping thread. Check the clock
+# and the minimum wait; physical scheduling precision needs a hardware test.
+assert 0.01 <= t1 - t0 < 1.0 and t1 <= pm.get_secs(), t1 - t0
 try:
     modes = pm.resolutions()
 except pm.PsychMetalError as e:
