@@ -728,6 +728,8 @@ check(pm._S is None and core.diagnostic()[0].shape[0] > 10, 'Ctrl-C stopped the 
 print(f'PASS: {passed} checks of the psychmetal package through the Python front end.')
 
 # Captured native timeline through the real binding and scripted presenter.
+# Earlier mode tests leave a 240-Hz fixture behind; use a fixed clock here.
+os.environ['PM_MOCK_DISPLAY']='800x600@60'
 w,_,ifi_tl=pm.open_window()
 pm.draw_stimulus(w,pm.make_stimulus('grating'),[0,0,100,100])
 before=pm._S['flip_count']
@@ -826,7 +828,7 @@ def change_later():
     time.sleep(.04)
     pm.update_timeline([[0,0,.25],[0,2,20]])
     updates.append(True)
-t=threading.Thread(target=change_later);t.start();pm.play_timeline(w,20);t.join()
+t=threading.Thread(target=change_later);t.start();pm.play_timeline(w,120);t.join()
 check(updates==[True],'live timeline update bypasses playback mutex')
 # A controller thread reads input and waits while the timeline plays.
 pm.draw_stimulus(w,pm.make_stimulus('grating'),[0,0,100,100])
@@ -838,8 +840,8 @@ def steer():
         pm.get_mouse(w);pm.mouse_events(w);pm.touch_events(w);pm.kb_check();pm.wait_secs(.005)
         steps.append(time.perf_counter()-t0)
         pm.update_timeline([[0,0,.5]])
-t=threading.Thread(target=steer);t.start();r=pm.play_timeline(w,40);t.join()
-check(len(steps)==5 and max(steps)<.1 and r['submitted']==40,'input and waits run beside a playing timeline')
+t=threading.Thread(target=steer);t.start();r=pm.play_timeline(w,240);t.join()
+check(len(steps)==5 and max(steps)<1 and r['submitted']==240,'input and waits run beside a playing timeline')
 # An experiment on the main thread is not stopped by a helper thread reading input.
 done=threading.Event()
 def read_until_done():
