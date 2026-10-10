@@ -56,6 +56,8 @@
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/syscall.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
 #endif
 
 namespace {
@@ -345,6 +347,8 @@ void pm::shutdown() noexcept {
 bool pm::onMainThread() noexcept {
 #if defined(__linux__)
     return syscall(SYS_gettid) == getpid();
+#elif defined(__APPLE__)
+    return pthread_main_np() != 0;
 #else
     return true;
 #endif

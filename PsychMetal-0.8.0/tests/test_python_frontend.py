@@ -890,5 +890,5 @@ for t in threads:t.start()
 barrier.wait()
 for t in threads:t.join()
 del os.environ['PM_MOCK_INPUT_SERIAL']
-check(not errors,'concurrent input callers serialize native reader state')
+check(not errors,f'concurrent input callers serialize native reader state: {errors!r}')
 print('PASS: input readers do not race native counters or listener setup.')
