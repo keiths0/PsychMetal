@@ -941,6 +941,12 @@ void pm::setMouse(double x, double y) {
     mouseX = x - dx; mouseY = y - dy;   // the next read is the position set; the scripted drift goes on from there
 }
 pm::KeyState pm::keys() {
+    if (getenv("PM_MOCK_INPUT_SERIAL")) {
+        static std::atomic<int> readers{0};
+        if (readers.fetch_add(1)!=0) {readers.fetch_sub(1);fail("Concurrent input readers.");}
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        readers.fetch_sub(1);
+    }
     pm::KeyState k{};
     k.anyDown = false; k.secs = clockNow(); k.securePid = 0;
     // "USAGE:FROM-TO,...": key USAGE is down while FROM <= frames flipped since open < TO.

@@ -866,3 +866,19 @@ r=pm.play_timeline(w,3,keyframes=[[0,1,0,0],[0,1,2,180]])
 check(r['submitted']==3,'keyframe playback binding')
 pm.close(w)
 print('PASS: keyframe binding, range/order and periodic collision checks.')
+
+# Input readers share playback access, but serialize their own native counters.
+os.environ['PM_MOCK_INPUT_SERIAL']='1'
+barrier=threading.Barrier(3);errors=[]
+def concurrent_reader():
+    barrier.wait()
+    try:
+        for _ in range(30):pm.kb_check()
+    except BaseException as error:errors.append(error)
+threads=[threading.Thread(target=concurrent_reader) for _ in range(2)]
+for t in threads:t.start()
+barrier.wait()
+for t in threads:t.join()
+del os.environ['PM_MOCK_INPUT_SERIAL']
+check(not errors,'concurrent input callers serialize native reader state')
+print('PASS: input readers do not race native counters or listener setup.')

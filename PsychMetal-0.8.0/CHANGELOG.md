@@ -1,15 +1,15 @@
 # Changelog
 
-## 0.8.0 — development, 2026-10-09
+## 0.8.0 — 2026-10-10
 
-From the review of October 10 (REVIEW-0.8.0-v1.md); built here only against
-stand-in headers and the scripted engine, not yet on a Mac or a phone:
+October 10 review changes (rebuilt against macOS/iOS SDKs and checked with the
+scripted presenter and native sanitizer suite; physical-device limits are in VALIDATION.md):
 
 - Corrected: a playing timeline held the Python binding's engine lock, so a
   second thread could not read the mouse, touches or keys, or even wait, until
   playback ended; and any helper thread's call made a main-thread experiment's
   calls fail. Calls now hold the engine in one of three ways: alone (anything
-  that changes it), reading (input, beside other readers and a playing timeline),
+  that changes it), reading (input, beside a playing timeline; readers serialized),
   or not at all (`wait_secs`, the clock). The main thread waits up to 50 ms
   before reporting the engine in use. Exit no longer waits forever for a thread
   stuck in the engine.
@@ -48,6 +48,8 @@ stand-in headers and the scripted engine, not yet on a Mac or a phone:
   cancellations, late and missing frames, input during playback, a main-thread
   experiment beside a reading thread, exactly hard mask edges (GPU test).
 
+- Serialize native input readers to protect diagnostic counters and lazy touch
+  listener installation while preserving concurrent input during playback.
 - Make Mac Python builds explicitly ARM64, including when built with a
   universal2 python.org interpreter; wheel tags match the compiled architecture.
 - Align embedded support Python.framework minimum OS metadata before signing,
@@ -86,8 +88,7 @@ stand-in headers and the scripted engine, not yet on a Mac or a phone:
   acceptance remains pending.
 - Add shared native environment metadata and strict, explicit Python JSON export.
 - Read strided double views safely even when their buffers are unaligned.
-- This is an unpublished development tree; see ROADMAP-0.8.0.md for remaining
-  hardware acceptance and distribution steps.
+- See ROADMAP-0.8.0.md and VALIDATION.md for remaining physical-device acceptance.
 
 ## 0.7.2 — release candidate, 2026-10-09
 

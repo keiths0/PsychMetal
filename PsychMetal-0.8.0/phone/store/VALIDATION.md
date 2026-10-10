@@ -1,4 +1,4 @@
-# 0.8.0 phone build validation — October 9, 2026
+# 0.8.0 phone build validation — October 10, 2026
 
 Fresh device/simulator CPython 3.14 wheels and both Release Xcode builds passed.
 Offline bundle inspection passed for 88 frameworks in each app: platform,

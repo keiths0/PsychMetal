@@ -1,18 +1,21 @@
 # PsychMetal 0.8.0 worklist — October 9, 2026
 
-Separate unpublished development tree based on the 0.7.2 candidate. The 0.7.1
-App Store correction remains independent. No GitHub or Apple upload is implied.
+Release scope includes the 0.7.2 optimization work. The 0.7.1 App Store
+submission remains independent; GitHub publication does not upload a phone app.
 
 | Work item | Implemented | Remaining acceptance |
 |---|---|---|
 | Environment report | Shared native metadata, all Mac bindings, strict JSON, phone collection outside trials | Compare reports across physical devices |
-| Native stimulus timeline | Captured scene, periodic frame-counted tracks, linear keyframes, atomic live parameter updates, cancellation, demos | Physical timing, touch/lifecycle transitions |
+| Native stimulus timeline | Captured scene, periodic frame-counted tracks, linear keyframes, Python live parameter updates, cancellation, demos | Physical timing, touch/lifecycle transitions |
 | Reusable GPU masks | Gaussian, ellipse, annulus, raised cosine, optional image coverage | GPU pixel fixtures and cross-device visuals |
 | Masked still images | Shared sampler, crop/rotation/filter/alpha, retained versions, draggable demos | User accepted Mac Octave visuals/drag; remaining GPU and device matrix |
 | Custom Metal shaders | Fixed fragment contract, upfront pipeline compilation/cache, target/blend/clip/mask integration, shared spiral demo | Actual MSL compilation and GPU pixels on accessible hardware |
 | Phone reports | Local persistence, matching environment snapshots, iPhone/iPad Share sheet, cancellation and reopening | Actual UIKit sharing, iPad popover and background/resume |
 | Phone UI cleanup | Idle main-thread cyclic GC policy, safe exit while worker closes | Main Thread Checker across repeated transitions; cause/fix not yet proven on device |
 | Video and audio | Explicitly deferred at user request | Future releases |
+
+MATLAB/Octave expose blocking playback/keyframes; live updates and explicit
+cancellation calls are Python/native APIs. MATLAB/Octave use Escape to stop.
 
 See TIMELINE.md, GPU-MASKS.md, MASKED-IMAGES.md, CUSTOM-SHADERS.md and VALIDATION.md.
 All new APIs have boundary/lifetime tests. Scripted presentation validates host

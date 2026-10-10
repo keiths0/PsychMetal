@@ -1,11 +1,11 @@
-# PsychMetal 0.8.0 — development
+# PsychMetal 0.8.0
 
 Native Metal presentation shared by MATLAB, Octave, Python and the iPhone/iPad app.
-This is a separate, unpublished development tree based on the 0.7.2 candidate.
-The App Store packaging correction remains 0.7.1 build 4 in its own folder.
+This release includes the 0.7.2 optimization work and new GPU/timeline features.
+The separate 0.7.1 App Store submission is unchanged; its source is at tag v0.7.1.
 
 The complete scope and current status are in [ROADMAP-0.8.0.md](ROADMAP-0.8.0.md).
-Implemented so far: native environment metadata through all three Mac interfaces,
+Included: native environment metadata through all three Mac interfaces,
 Python JSON export, and native captured-scene timeline playback through all three
 interfaces. See [TIMELINE.md](TIMELINE.md) and the new Python/MATLAB/Octave timeline
 demos. Reusable analytic Gaussian/ellipse/annulus/raised-cosine masks are implemented;

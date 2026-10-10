@@ -1,6 +1,6 @@
-# 0.8.0 development validation — October 9, 2026
+# 0.8.0 validation — October 10, 2026
 
-Unpublished development build. All available automated regression checks passed;
+Release validation record. All available automated regression checks passed;
 physical GPU/device acceptance remains incomplete. This execution environment
 has no accessible Metal GPU or active display.
 
@@ -12,7 +12,7 @@ has no accessible Metal GPU or active display.
 - Rebuilt ARM64 Python, Octave and MATLAB native modules. Real macOS, iOS device
   and ARM64 simulator SDK type checks passed with warnings enabled.
 - Full local regression runner passed, including both real host bindings against
-  the scripted engine. Octave inventory **235/235 across 78 commands**; readback
+  the scripted engine. Octave inventory **233/233 across 76 commands**; readback
   **46/46**. Both Python and MEX keyframe playback/validation passed.
 - Actual native playback under AddressSanitizer/UndefinedBehaviorSanitizer:
   exact phase/extrema samples, contrast/translation, row/column-major, reversed
@@ -63,4 +63,17 @@ The Octave binary uses installed Octave 11.3 libraries requiring macOS 26;
 MATLAB/Python target macOS 14+. Rebuild for another Octave installation as needed.
 
 See ROADMAP-0.8.0.md for the remaining physical-device acceptance matrix.
-Video/audio are intentionally deferred. No GitHub/Apple upload was performed.
+Video/audio are intentionally deferred. GitHub publication is separate from
+Apple submission; no Apple upload is part of this release.
+
+## October 10 review and release preparation
+
+Re-reviewed the updated native timeline results/cancellation, Python input
+concurrency, exact hard mask edges, Gabor orientation and tiled image packing.
+Added serialized native input readers plus a binding regression that detects
+simultaneous reader entry. Confirmed cancellation remains callable concurrently.
+Removed MATLAB/Octave UpdateTimeline/CancelTimeline commands are intentional;
+Python live controls remain supported. All shipped Mac/iOS modules are rebuilt
+from these final sources. Package manifests/checksums are regenerated afterward.
+GitHub wheel builds target 0.8.0; PyPI publication requires a separate explicit
+manual workflow option, avoiding an unintended PyPI upload during GitHub release.

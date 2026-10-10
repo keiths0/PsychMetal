@@ -19,7 +19,7 @@ The generated project is not an App Store submission or a signed archive.
 From this folder, on a Mac with Xcode and its iOS platform installed.
 
 1. Build the two Python 3.14 iOS wheels into this folder's `wheels/` directory.
-   This 0.8.0 development tree is not yet published; fresh 0.8.0 wheels are required. cibuildwheel needs python.org's
+   Use the 0.8.0 device/simulator release wheels, or build fresh wheels from this source. cibuildwheel needs python.org's
    Python 3.14 installed (the framework alone is enough), not Homebrew's.
 
        python3 -m venv ~/venvs/cibw && ~/venvs/cibw/bin/pip install cibuildwheel

@@ -2,28 +2,30 @@
 
 Native Metal stimulus presentation for Apple silicon Macs with MATLAB, Octave and Python interfaces, and for iPhone/iPad with Python. Uses supported Screen-style argument formats; it is not a complete Psychtoolbox replacement. No OpenGL or Vulkan presentation backend is used.
 
-## Current version: 0.7.1
+## Current version: 0.8.0
 
-- [Download the 0.7.1 release](https://github.com/keiths0/PsychMetal/releases/tag/v0.7.1)
-- [Installation, build instructions and demos](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/README.md)
-- [Changelog](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/CHANGELOG.md)
-- [Design: one engine, MATLAB/Octave and Python front ends](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/DESIGN-0.5.0.md)
-- [Keyboard queue and input event times](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/KEYBOARD-QUEUE.md)
+- [Download PsychMetal 0.8.0](https://github.com/keiths0/PsychMetal/releases/tag/v0.8.0)
+- [Installation, build instructions and demos](PsychMetal-0.8.0/README.md)
+- [Changelog](PsychMetal-0.8.0/CHANGELOG.md)
+- [Validation and hardware limitations](PsychMetal-0.8.0/VALIDATION.md)
 
-Version 0.7.1 optimizes frame readback, adds reusable Python output arrays,
-uses measured-rate frame-count sampling for the draggable blob array, and
-provides the phone demo gallery with scrollable timing reports. iPhone uses
-CAMetalDisplayLink by default. See [presentation](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/DISPLAY-LINK.md),
-[readback](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/READBACK-0.7.1.md), and [validation](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/VALIDATION.md).
+Version 0.8.0 adds native captured-scene timelines with periodic tracks, keyframes
+and Python live controls; analytic GPU masks and masked still images; custom Metal
+fragment programs; and persistent phone reports with explicit sharing. It also
+improves input concurrency, presentation reporting and column-major image uploads.
+Gabor orientation now agrees with procedural gratings; zero-width mask edges are
+exactly hard. See the changelog for these behavior changes.
 
-The user accepted the phone visuals and reported no long intervals after
-stopping Xcode debugging. Metal timestamps have not been validated with a
-photodiode. The GitHub ZIP includes Mac MATLAB/Octave binaries and phone source;
-separate iOS wheels are release assets. Python Mac wheels follow the repository’s
-existing PyPI release workflow. The phone app is not yet distributed through
-the App Store; see [phone build instructions](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/phone/README.md).
+Mac MATLAB/Octave binaries, source and demos are in the ZIP. Python 3.14 ARM64 Mac
+and iOS device/simulator wheels are separate release assets. The supplied Octave
+binary uses Octave 11.3 libraries requiring macOS 26; MATLAB/Python target macOS 14+.
+Automated checks do not establish physical timing or complete cross-device GPU
+acceptance. The GitHub release does not change the separate 0.7.1 App Store submission.
+Video and audio remain deferred.
 
 ## Previous releases
+
+Version 0.7.1 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.7.1)) optimized readback and introduced the phone gallery and timing reports. Its source is preserved at the release tag.
 
 Version 0.7.0 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.7.0), [changelog](PsychMetal-0.7.0/CHANGELOG.md)) introduced the iPhone/iPad Python port, reusable GPU carriers and masks, touch events and the draggable Gaussian array.
 

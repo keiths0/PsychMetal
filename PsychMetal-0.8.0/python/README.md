@@ -2,14 +2,14 @@
 
 Native Metal stimulus presentation on Apple silicon Macs, from Python, with an interface resembling Psychtoolbox's Screen. There is no OpenGL anywhere in the path. The same engine serves [PsychMetal](https://github.com/keiths0/PsychMetal) for MATLAB and Octave.
 
-Version 0.8.0 is an unpublished development build for Mac and the separately built iPhone/iPad app. It adds native timelines with keyframes/live control, analytic masks, masked images, custom fragment shaders and phone report sharing. See TIMELINE.md, MASKED-IMAGES.md, CUSTOM-SHADERS.md and phone/README.md in the source tree. Hardware acceptance remains pending.
+Version 0.8.0 is available for Mac and the separately built iPhone/iPad app. It adds native timelines with keyframes/live control, analytic masks, masked images, custom fragment shaders and phone report sharing. See TIMELINE.md, MASKED-IMAGES.md, CUSTOM-SHADERS.md and phone/README.md in the source tree. Hardware acceptance remains pending.
 
 Install it into a virtual environment. Homebrew's Python (and any Python following PEP 668) refuses packages installed outside one:
 
 ```bash
 python3 -m venv ~/venvs/psychmetal          # once
 source ~/venvs/psychmetal/bin/activate      # in each new Terminal window
-pip install /path/to/PsychMetal-0.8.0    # build this development version
+pip install /path/to/PsychMetal-0.8.0    # build this version
 ```
 
 Requires macOS 14 or later on Apple silicon, an arm64 Python 3.10 or later, and numpy.
@@ -32,13 +32,13 @@ Flip timestamps come from Metal's presentation reports, not a photodiode. See th
 MIT license.
 
 
-0.8.0 development adds `pm.play_timeline(w, frames, tracks)` for native replay
+0.8.0 adds `pm.play_timeline(w, frames, tracks)` for native replay
 of a queued scene. `timeline_demo.py` measures refresh, then runs fixed Gaussian
 flicker with no per-frame Python calls. `pm.stop()` also cancels native playback.
 See TIMELINE.md in the source tree for track layout and presentation semantics.
 The phone app needs freshly built 0.8.0 extension wheels before using this API.
 
-## 0.8.0 development: masked still images
+## 0.8.0: masked still images
 
 Use `pm.draw_masked_texture(w, texture, pm.make_mask('gaussian'))` to apply
 analytic GPU coverage to an image without resizing its pixels on the CPU.

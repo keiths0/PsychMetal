@@ -15,7 +15,7 @@
 //
 // Calls are of three kinds (see hold()). Most change the engine's state and run
 // one at a time, alone. Reading input (mouse, touches, keys, the keyboard queue)
-// runs beside other readers and beside a playing timeline, so that a second
+// runs beside a playing timeline, with input readers serialized, so that a second
 // thread can steer a timeline from what the participant does. Waiting for a time
 // and the clock touch nothing of the engine's and take no lock at all.
 #define PY_SSIZE_T_CLEAN
@@ -38,6 +38,7 @@ PyObject *ErrorType = nullptr;       // psychmetal.PsychMetalError (RuntimeError
 PyObject *arrayFactory = nullptr;    // factory(buffer, typecode, shape) -> array
 std::timed_mutex engineMutex;           // one call that changes the engine at a time
 std::shared_timed_mutex inputMutex;     // shared by readers; held alone by a call that changes the engine
+std::timed_mutex readerMutex;          // input routines also update counters/lazy listeners
 std::mutex warningMutex;
 std::vector<std::pair<std::string, std::string>> pendingWarnings;
 
@@ -63,7 +64,7 @@ void flushWarnings() {
 
 // How a call holds the engine:
 //   Alone:   it changes the engine; nothing else runs beside it.
-//   Reading: it reads input; it runs beside other readers and a playing timeline.
+//   Reading: it reads input; it runs beside a playing timeline, one reader at a time.
 //   Playing: a timeline; readers run beside it, other calls wait for it.
 enum class Hold { Alone, Reading, Playing };
 
@@ -82,12 +83,17 @@ template <Hold how = Hold::Alone, class F> void engine(F &&fn) {
         std::unique_lock<std::timed_mutex> calls(engineMutex, std::defer_lock);
         std::unique_lock<std::shared_timed_mutex> alone(inputMutex, std::defer_lock);
         std::shared_lock<std::shared_timed_mutex> reading(inputMutex, std::defer_lock);
+        std::unique_lock<std::timed_mutex> reader(readerMutex, std::defer_lock);
         if (how != Hold::Reading)
             busy = main ? !calls.try_lock_for(moment) : (calls.lock(), false);
         if (!busy && how == Hold::Alone)
             busy = main ? !alone.try_lock_for(moment) : (alone.lock(), false);
         if (!busy && how != Hold::Alone)
             busy = main ? !reading.try_lock_for(moment) : (reading.lock(), false);
+        // Readers may run beside playback, but not beside one another: keys()
+        // updates diagnostic counters, and touchEvents() installs listeners lazily.
+        if (!busy && how == Hold::Reading)
+            busy = main ? !reader.try_lock_for(moment) : (reader.lock(), false);
         if (!busy)
             try { fn(); } catch (...) { error = std::current_exception(); }
     }
