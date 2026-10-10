@@ -20,7 +20,7 @@ on:
     branches: [main]
 
 env:
-  PACKAGE_DIR: PsychMetal-0.8.0
+  PACKAGE_DIR: PsychMetal-0.8.1
 
 jobs:
   linux:

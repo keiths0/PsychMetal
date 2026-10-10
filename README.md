@@ -2,26 +2,27 @@
 
 Native Metal stimulus presentation for Apple silicon Macs with MATLAB, Octave and Python interfaces, and for iPhone/iPad with Python. Uses supported Screen-style argument formats; it is not a complete Psychtoolbox replacement. No OpenGL or Vulkan presentation backend is used.
 
-## Current version: 0.8.0
+## Current version: 0.8.1
 
-- [Download PsychMetal 0.8.0](https://github.com/keiths0/PsychMetal/releases/tag/v0.8.0)
-- [Installation, build instructions and demos](PsychMetal-0.8.0/README.md)
-- [Changelog](PsychMetal-0.8.0/CHANGELOG.md)
-- [Validation and hardware limitations](PsychMetal-0.8.0/VALIDATION.md)
+- [Installation, build instructions and demos](PsychMetal-0.8.1/README.md)
+- [Changelog](PsychMetal-0.8.1/CHANGELOG.md)
+- [Validation and hardware limitations](PsychMetal-0.8.1/VALIDATION.md)
 
-Version 0.8.0 adds native captured-scene timelines with periodic tracks, keyframes
-and Python live controls; analytic GPU masks and masked still images; custom Metal
-fragment programs; and persistent phone reports with explicit sharing. It also
-improves input concurrency, presentation reporting and column-major image uploads.
-Gabor orientation now agrees with procedural gratings; zero-width mask edges are
-exactly hard. See the changelog for these behavior changes.
+Version 0.8.1 fixes first-launch phone sharing and menu recovery, hides diagnostic
+tools when Diagnostic mode is off, improves Python cancellation and argument
+validation, and adds MATLAB/Octave environment export and recent-frame snapshots.
+It also protects custom shader wrappers from user macros and lets the native
+wait's spin margin recover after a late wake-up. See the changelog for API changes.
 
-Mac MATLAB/Octave binaries, source and demos are in the ZIP. Python 3.14 ARM64 Mac
-and iOS device/simulator wheels are separate release assets. The supplied Octave
-binary uses Octave 11.3 libraries requiring macOS 26; MATLAB/Python target macOS 14+.
-Automated checks do not establish physical timing or complete cross-device GPU
-acceptance. The GitHub release does not change the separate 0.7.1 App Store submission.
-Video and audio remain deferred.
+[Download PsychMetal 0.8.1](https://github.com/keiths0/PsychMetal/releases/tag/v0.8.1).
+Previous release: [PsychMetal 0.8.0](https://github.com/keiths0/PsychMetal/releases/tag/v0.8.0).
+
+Mac MATLAB/Octave binaries, source and demos are included in the release ZIP.
+Python 3.14 ARM64 Mac and iOS device/simulator wheels are separate release assets.
+The supplied Octave binary uses Octave 11.3 libraries requiring macOS 26;
+MATLAB/Python target macOS 14+. Automated checks do not establish physical timing
+or complete cross-device GPU acceptance. GitHub publication and App Store
+submission are separate. Video and audio remain deferred.
 
 ## Previous releases
 
