@@ -5,23 +5,23 @@ Native Metal stimulus presentation for Apple silicon Macs with MATLAB, Octave an
 ## Current version: 0.7.1
 
 - [Download the 0.7.1 release](https://github.com/keiths0/PsychMetal/releases/tag/v0.7.1)
-- [Installation, build instructions and demos](PsychMetal-0.7.1/README.md)
-- [Changelog](PsychMetal-0.7.1/CHANGELOG.md)
-- [Design: one engine, MATLAB/Octave and Python front ends](PsychMetal-0.7.1/DESIGN-0.5.0.md)
-- [Keyboard queue and input event times](PsychMetal-0.7.1/KEYBOARD-QUEUE.md)
+- [Installation, build instructions and demos](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/README.md)
+- [Changelog](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/CHANGELOG.md)
+- [Design: one engine, MATLAB/Octave and Python front ends](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/DESIGN-0.5.0.md)
+- [Keyboard queue and input event times](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/KEYBOARD-QUEUE.md)
 
 Version 0.7.1 optimizes frame readback, adds reusable Python output arrays,
 uses measured-rate frame-count sampling for the draggable blob array, and
 provides the phone demo gallery with scrollable timing reports. iPhone uses
-CAMetalDisplayLink by default. See [presentation](PsychMetal-0.7.1/DISPLAY-LINK.md),
-[readback](PsychMetal-0.7.1/READBACK-0.7.1.md), and [validation](PsychMetal-0.7.1/VALIDATION.md).
+CAMetalDisplayLink by default. See [presentation](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/DISPLAY-LINK.md),
+[readback](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/READBACK-0.7.1.md), and [validation](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/VALIDATION.md).
 
 The user accepted the phone visuals and reported no long intervals after
 stopping Xcode debugging. Metal timestamps have not been validated with a
 photodiode. The GitHub ZIP includes Mac MATLAB/Octave binaries and phone source;
 separate iOS wheels are release assets. Python Mac wheels follow the repository’s
 existing PyPI release workflow. The phone app is not yet distributed through
-the App Store; see [phone build instructions](PsychMetal-0.7.1/phone/README.md).
+the App Store; see [phone build instructions](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/phone/README.md).
 
 ## Previous releases
 
@@ -45,7 +45,7 @@ Add only one version folder to your host path, not its tests/mock subdirectory. 
 
 ## History and comparisons
 
-The 0.4.3 changelog retains 0.4.1's demo/signature fixes, included in the published 0.4.2 package. Historical version folders and [development reports](docs/) remain available; their measurements and implementation descriptions refer to their original versions. Optional Psychtoolbox comparisons are in [comparisons/](PsychMetal-0.7.1/comparisons/).
+The 0.4.3 changelog retains 0.4.1's demo/signature fixes, included in the published 0.4.2 package. Historical version folders and [development reports](docs/) remain available; their measurements and implementation descriptions refer to their original versions. Optional Psychtoolbox comparisons are in [comparisons/](https://github.com/keiths0/PsychMetal/blob/v0.7.1/PsychMetal-0.7.1/comparisons/).
 
 ## License and citation
 

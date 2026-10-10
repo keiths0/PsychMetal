@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "psychmetal"
+version = "0.8.0"
+description = "Native Metal stimulus presentation on Apple silicon, with a Psychtoolbox Screen-like interface"
+readme = "python/README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Keith Schneider", email = "keith@alumni.caltech.edu" }]
+dependencies = ["numpy"]
+keywords = ["psychophysics", "vision science", "stimulus presentation", "Metal", "Psychtoolbox"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: iOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "Programming Language :: Objective C",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage = "https://github.com/keiths0/PsychMetal"
+Documentation = "https://github.com/keiths0/PsychMetal/blob/main/PsychMetal-0.8.0/README.md"
+Changelog = "https://github.com/keiths0/PsychMetal/blob/main/PsychMetal-0.8.0/CHANGELOG.md"
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+packages = ["psychmetal"]
+include-package-data = false
+
+# Wheels for every supported Python, built on GitHub's Apple-silicon machines by
+# .github/workflows/wheels.yml. The import test needs no display.
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+test-command = "python -c \"import psychmetal; print(psychmetal.version())\""
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }
+
+# iPhone and iPad: cibuildwheel --platform ios, on a Mac with Xcode. Nothing but
+# the compiler is needed from the Mac at build time. No import test is run:
+# it would need a simulator, and the test that counts is the app on a device.
+[tool.cibuildwheel.ios]
+environment = { IPHONEOS_DEPLOYMENT_TARGET = "15.0" }
+xbuild-tools = []
+test-command = ""

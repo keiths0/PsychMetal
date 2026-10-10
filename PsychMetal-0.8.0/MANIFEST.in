@@ -1,0 +1,16 @@
+# The source distribution: what pip needs to build the extension, and nothing
+# else. The prebuilt binaries in the repository are left out; pip builds its own.
+include PsychMetalDisplayLink.h PsychMetalCustomShader.h PsychMetalLiveTimeline.h PsychMetalKeyframes.h PsychMetalTimeline.h PsychMetalReadback.h PsychMetalEngine.h PsychMetalInternal.h PsychMetalKeyboardQueue.h PsychMetalShaders.h PsychMetalIOS.h
+include python/README.md
+global-exclude *.so *.mex *.mexmaca64 *.o
+prune tests
+prune phone
+
+include TIMELINE.md
+include GPU-MASKS.md
+
+include MASKED-IMAGES.md
+
+include CUSTOM-SHADERS.md
+
+include python/custom-shader-demo.metal
