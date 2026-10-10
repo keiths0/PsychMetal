@@ -7,7 +7,15 @@
 #include <iostream>
 static std::atomic<bool> keys[256];
 static void readKeys(bool* out,const bool* mask) { for(int k=0;k<256;k++) out[k]=mask[k]&&keys[k].load(); }
-static double clockNow() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static std::atomic<double> controlledTime{0};
+static double wallNow() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static double clockNow() { double t=controlledTime.load(); return t>0?t:wallNow(); }
+// Let the real worker observe a state while holding its event clock fixed.
+// sleep_for(6ms) is not a promise to wake before the 20ms grace on a CI host.
+static void scanned(PMKeyboardQueue &q) {
+ auto target=q.stats().scans+2; auto limit=wallNow()+5;
+ while(q.stats().scans<target) { assert(wallNow()<limit); std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+}
 static void wait() { std::this_thread::sleep_for(std::chrono::milliseconds(12)); }
 int main() {
  PMKeyboardQueue q(readKeys,clockNow); bool mask[256]={}; mask[22]=true; mask[40]=true;
@@ -53,21 +61,21 @@ int main() {
  assert(q.stats().maxEventDelay==.004);
  q.check(summary); assert(summary[1][22]==early && summary[3][22]==early);
  // Polling sees the change first and waits; the event then supplies the time.
- double before=clockNow(); keys[40]=true; std::this_thread::sleep_for(std::chrono::milliseconds(4)); assert(q.events(dropped).empty());
- q.post(before,41,true,.012); e=q.events(dropped); assert(e.size()==1 && e[0].key==41 && e[0].time==before);
+ double before=clockNow(); controlledTime=before; keys[40]=true; scanned(q); assert(q.events(dropped).empty());
+ q.post(before,41,true,.012); controlledTime=0; e=q.events(dropped); assert(e.size()==1 && e[0].key==41 && e[0].time==before);
  std::this_thread::sleep_for(std::chrono::milliseconds(60)); assert(q.events(dropped).empty()); // not recorded twice
  // No event arrives: after the grace period polling records it, with the time it first saw it.
- before=clockNow(); keys[40]=false; std::this_thread::sleep_for(std::chrono::milliseconds(60)); e=q.events(dropped);
- assert(e.size()==1 && !e[0].pressed && e[0].time>=before && e[0].time<before+.010 && q.stats().pollStamped==2);
+ before=clockNow(); controlledTime=before; keys[40]=false; scanned(q); controlledTime=before+.060; scanned(q); e=q.events(dropped); controlledTime=0;
+ assert(e.size()==1 && !e[0].pressed && e[0].time==before && q.stats().pollStamped==2);
  // An event for an unwatched key, or one that repeats the known state, records nothing.
  q.post(clockNow(),5,true,0); q.post(clockNow(),41,false,0); assert(q.events(dropped).empty());
  // A press and release inside the grace period with no event for the key: polling records both, and
  // events that then arrive late for them are not recorded again.
  std::this_thread::sleep_for(std::chrono::milliseconds(40));
- before=clockNow(); keys[22]=true; std::this_thread::sleep_for(std::chrono::milliseconds(6)); keys[22]=false;
- std::this_thread::sleep_for(std::chrono::milliseconds(30)); e=q.events(dropped);
+ before=clockNow(); controlledTime=before; keys[22]=true; scanned(q); controlledTime=before+.006; keys[22]=false;
+ scanned(q); e=q.events(dropped);
  assert(e.size()==2 && e[0].key==23 && e[0].pressed && !e[1].pressed && e[0].time>=before && e[1].time>e[0].time);
- q.post(before+.001,23,true,.03); q.post(before+.005,23,false,.03); assert(q.events(dropped).empty());
+ q.post(before+.001,23,true,.03); q.post(before+.005,23,false,.03); assert(q.events(dropped).empty()); controlledTime=0;
  // Flush is a barrier for events too: one stamped before it and delivered after it is not recorded,
  // but the state it reports is kept, so the release that follows is.
  double pressedAt=clockNow(); keys[40]=true; q.flush(); q.post(pressedAt,41,true,.002);
