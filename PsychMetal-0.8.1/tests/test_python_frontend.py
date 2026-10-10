@@ -711,9 +711,20 @@ try:
               'stop ends a wait or polling loop promptly')
         pm.kb_queue_release()
     pm.start(lambda: None).join()
-    t0 = pm.get_secs()
-    returned = pm.wait_secs(0.08)
-    check(0.08 <= returned - t0 < 0.15, 'a long wait_secs returns no earlier than asked (precision: the Mac timing tests)')
+    # Shared CI runners can be descheduled arbitrarily; check the no-early
+    # guarantee without imposing a hardware timing upper bound.
+    deadline = pm.get_secs() + 0.08
+    returned = pm.wait_secs('UntilTime', deadline)
+    check(returned >= deadline, 'wait_secs returns no earlier than its deadline')
+    # A controlled clock checks that the interruptible sleep leaves the native
+    # final wait its full budget and preserves the requested absolute deadline.
+    from unittest.mock import patch
+    with patch.object(pm._core, 'now', side_effect=[100.0, 100.005]), \
+         patch.object(pm._abort, 'wait', return_value=False) as sleeping, \
+         patch.object(pm._core, 'wait_until', return_value=100.081) as final_wait:
+        check(pm.wait_secs(0.08) == 100.081, 'wait_secs returns the native completion time')
+        check(abs(sleeping.call_args.args[0] - 0.05) < 1e-12, 'coarse wait leaves the 25 ms native budget')
+        final_wait.assert_called_once_with(100.08)
     pm.close(wm)
     gate = threading.Event()
     worker = pm.start(lambda: (pm.open_window(0), gate.wait()))
