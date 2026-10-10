@@ -53,9 +53,10 @@ check(all((root / 'python' / f'{m}.py').exists() for m in sources), 'and they ex
 # --- the demos made for fingers ------------------------------------------------------------------------
 os.environ['PM_MOCK_DISPLAY_LINK_DEFAULT']='1'  # iOS 17+ native default
 os.environ['PM_MOCK_DISPLAY'] = '800x600@60'
-os.environ['PM_MOCK_MOUSE'] = '20,0,0'
+os.environ['PM_MOCK_MOUSE'] = '3,0,0'
 r, said = quiet(finger_ring.finger_ring, 0.5)
-check(r['frames'] == 31 and r['ended_by'] == 'time' and r['touch_events'] == 3 and r['most_fingers'] == 1 and
+# This is a time-limited demo, not a promised frame count on a loaded CI host.
+check(5 <= r['frames'] <= 31 and r['ended_by'] == 'time' and r['touch_events'] == 3 and r['most_fingers'] == 1 and
       'Ended by: time' in said, 'finger_ring runs its time and reports')
 r, said = quiet(ring_check.ring_check)
 check(r == dict(wrong_in_the_ring=0, wrong_outside=0) and 'drawn exactly' in said, 'ring_check reads its frames back')

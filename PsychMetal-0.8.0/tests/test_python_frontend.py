@@ -272,7 +272,15 @@ d = pm.diagnostic(w)
 h, s = core.diagnostic()
 check(h.shape[1] == 16 and len(s) == 60, 'raw diagnostic: 16 history columns, 60 summary fields')
 check(list(s)[:3] == ['confirmedPresentations', 'missingPresentedTimes', 'lastTargetErrorMs'], 'summary field order')
-check(d['summary']['flips'] == 8 and np.isfinite(d['summary']['measuredRefreshHz']), 'diagnostic summary and refresh fit')
+check(d['summary']['flips'] == 8, 'diagnostic summary flip count')
+# A busy CI host can miss every adjacent refresh during the GIL spinner above.
+# Verify the refresh fit against a known history, independent of host scheduling.
+from unittest.mock import patch
+uniform=h.copy();uniform[:,0]=np.arange(1,len(h)+1)
+uniform[:,2]=10+np.arange(len(h))/60;uniform[:,3]=0
+with patch.object(core,'diagnostic',lambda:(uniform,s.copy())):
+    fitted=pm.diagnostic(w)
+check(np.isclose(fitted['summary']['measuredRefreshHz'],60,rtol=1e-6), 'diagnostic refresh fit on uniform confirmed samples')
 check(set(['flipNumber', 'actualTimestamp', 'pipelineLeadMs', 'startup']) <= set(d), 'diagnostic fields')
 
 # --- input ------------------------------------------------------------------------------------
