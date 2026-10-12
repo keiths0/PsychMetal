@@ -2,12 +2,13 @@ cff-version: 1.2.0
 message: >-
   If you use PsychMetal in work you publish, please cite it. It is
   experimental research software and has not been validated against a
-  photodiode; say so if your timing claims depend on it.
-title: "PsychMetal: direct Metal stimulus presentation on Apple silicon"
+  photodiode or a microphone; say so if your timing claims depend on it.
+title: "PsychMetal: direct Metal stimulus presentation and Core Audio sound on Apple silicon"
 abstract: >-
   A native Metal presentation library with supported Screen-style commands
   that presents through CAMetalLayer and reports MTLDrawable.presentedTime,
-  with native Metal drawing primitives and no OpenGL. One engine serves
+  with native Metal drawing primitives and no OpenGL, and Core Audio sound
+  scheduled to the sample or to a frame, with recording. One engine serves
   MATLAB, Octave and Python (the psychmetal package on PyPI). Keeps Screen's
   argument formats so that existing code ports, and copies none of its
   implementation.
@@ -16,8 +17,8 @@ authors:
   - family-names: Schneider
     given-names: Keith
     email: keith@alumni.caltech.edu
-version: 0.8.1
-date-released: 2026-10-10
+version: 0.9.0
+date-released: 2026-10-12
 repository-code: "https://github.com/keiths0/PsychMetal"
 license: MIT
 keywords:
@@ -28,3 +29,4 @@ keywords:
   - psychtoolbox
   - python
   - stimulus-timing
+  - audio
