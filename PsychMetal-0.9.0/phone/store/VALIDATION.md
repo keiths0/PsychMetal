@@ -2,7 +2,8 @@
 
 Final rebuilt Mac binaries passed the checks recorded below, and Keith reported
 that the iPhone tests work. These are functional acceptance results, not
-physical timing certification. Remote release CI remains pending.
+physical timing certification. Remote Linux/macOS CI and all five Mac wheel builds passed for source commit
+90d6417; links below.
 
 ## Completed checks (automated, against the current 0.9.0 sources)
 
@@ -74,9 +75,11 @@ physical timing certification. Remote release CI remains pending.
   88 compatible frameworks each. The device bundle contains Assets.car and
   configured iPhone/iPad AppIcon files despite the runtime fallback-icon warning.
 
-## Remaining before publication
+## Release verification
 
-- Remote Linux/macOS CI on the release commit.
+- [Linux/macOS CI](https://github.com/keiths0/PsychMetal/actions/runs/38310222083) passed for source commit 90d6417.
+- [Python 3.10–3.14 Mac wheels and source distribution](https://github.com/keiths0/PsychMetal/actions/runs/38310243097) passed.
+  Subsequent release-record edits do not change native or Python package sources.
 - Publication metadata is dated October 12; regenerate manifest/checksums
   after any further release edits.
 - Broader hardware coverage below remains outside this acceptance run.

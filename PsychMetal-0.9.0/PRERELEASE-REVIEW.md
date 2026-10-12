@@ -88,9 +88,10 @@ is not an undisturbed frame-timing measurement. Individual route/permission
 scenarios were not separately logged. The built bundle contains the configured
 Apple icon assets despite the runtime fallback warning.
 
-Remote Linux/macOS CI remains required on the release commit. Set the actual
-publication date in CHANGELOG.md and CITATION.cff, and regenerate the package
-after final metadata edits. See VALIDATION.md for evidence and coverage limits.
+[Linux/macOS CI](https://github.com/keiths0/PsychMetal/actions/runs/38310222083) and
+[Mac wheel/source builds](https://github.com/keiths0/PsychMetal/actions/runs/38310243097) passed for source commit 90d6417.
+Publication metadata is dated October 12; the package was regenerated after
+these release-record edits. See VALIDATION.md for evidence and coverage limits.
 No photodiode, microphone or loopback timing certification was performed.
 
 ## Performance and behavior limits to keep visible
