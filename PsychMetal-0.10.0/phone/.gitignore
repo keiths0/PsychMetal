@@ -1,0 +1,5 @@
+# What building the app leaves behind.
+build/
+wheels/
+logs/
+.briefcase/

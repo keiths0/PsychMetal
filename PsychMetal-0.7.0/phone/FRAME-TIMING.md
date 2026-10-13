@@ -37,3 +37,24 @@ a Mac. A third condition with no recorded input did not test dragging.
 For a baseline, use a cool phone with Low Power Mode off and launch the app
 without Xcode's debugger attached. Keep the phone orientation unchanged during
 a run. Repeat a run to distinguish recurring behavior from a one-off stall.
+
+## Compare Game Mode on and off
+
+The app opts into iOS Game Mode with `GCSupportsGameMode = true` in its
+Briefcase iOS configuration. This requests support; it is not a measurement
+of whether Game Mode is currently active.
+
+Rebuild and install the app, then check for Game Mode in the system's Game
+Overlay (open Control Centre while the app is running). Run **Frame timing**
+once with Game Mode on and once with it off, keeping other conditions the
+same. Change the setting before starting each test, not during recording.
+Take screenshots of each report and note which setting was used. The report
+does not automatically detect or label Game Mode's current state.
+
+Game Mode reduces background activity but does not guarantee every deadline
+or a fixed physical refresh rate. See [Apple's configuration guidance](https://developer.apple.com/videos/play/wwdc2024/10089/)
+and [Game Mode controls](https://support.apple.com/105118).
+
+Briefcase update copies Python code but does not refresh arbitrary Info.plist
+keys in an existing Xcode project. The current local project has also been
+patched with this Boolean; newly created projects inherit it from pyproject.toml.

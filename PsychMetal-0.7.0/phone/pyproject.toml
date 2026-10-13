@@ -55,3 +55,5 @@ requires = [
 requirement_installer_args = ["--find-links", "./wheels"]
 # Without this an iPhone holds the app to 60 Hz whatever its display can do.
 info."CADisableMinimumFrameDurationOnPhone" = true
+# Opt into iOS Game Mode; verify activation and compare on/off on the device.
+info."GCSupportsGameMode" = true
