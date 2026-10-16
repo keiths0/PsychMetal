@@ -4,8 +4,8 @@ function test_mex_frontend(root, mexdir)
 % Exercises every PsychMetal.m command family through the real MEX front end.
 addpath(root); addpath(mexdir, '-begin');
 clear PsychMetal PsychMetalCore
-assert(strcmp(PsychMetal('Version'), '0.9.0'));
-assert(strcmp(PsychMetalCore('Version'), '0.9.0'));
+assert(strcmp(PsychMetal('Version'), '0.10.0'));
+assert(strcmp(PsychMetalCore('Version'), '0.10.0'));
 
 % --- window, rects, timing basics
 [w, rect, ifi] = PsychMetal('OpenWindow', 0, [0 0 0]);
@@ -92,7 +92,7 @@ r = PsychMetal('RecentFrames', w, 4); assert(size(r, 2) == 4 && size(r, 1) >= 1 
 D = PsychMetal('Diagnostic', w);
 e = PsychMetal('Environment', w); assert(strcmp(e.gpuName, 'scripted GPU') && isfield(e.window, 'flips') && islogical(e.debuggerAttached) && ~e.debuggerAttached);
 [h, s] = PsychMetalCore('Diagnostic');
-assert(size(h, 2) == 14 && numel(fieldnames(s)) == 25);
+assert(size(h, 2) == 14 && numel(fieldnames(s)) == 26);
 assert(islogical(s.readbackEnabled) && ~s.readbackEnabled);
 reject(@() PsychMetal('GetImage', w));
 reject(@() PsychMetalCore('GetImage') + 0, 'GetImage requires a window opened with readback.');
@@ -163,8 +163,13 @@ PsychMetal('Close', wr);
 reject(@() openCore(0, 3, [], 2), 'readback must be a nonnegative integer in range.');
 reject(@() openCore(0, 3, [], 1, 12), 'bit depth must be a nonnegative integer in range.');
 reject(@() openCore(0, 3, [], 1, 9), 'Bit depth must be 8 or 10.');
-reject(@() openCore(0, 3, [], 1, 8, 1, 1), ['Open needs screenIndex,drawableCount[,refreshHz[,readback[,bitDepth[,displayLink]]]] ' ...
+reject(@() openCore(0, 3, [], 1, 8, 1, 1, 99), ['Open needs screenIndex,drawableCount[,refreshHz[,readback[,bitDepth[,displayLink[,captureDisplay]]]]] ' ...
     'and returns width,height,ifi,pointWidth,pointHeight,sessionToken.']);
+
+% Capture can be disabled explicitly; bad flag values are refused.
+wr=PsychMetal('OpenWindow',struct('captureDisplay',false));PsychMetal('Close',wr);
+reject(@() PsychMetal('OpenWindow',struct('captureDisplay',2)));
+reject(@() openCore(0,3,[],0,8,0,2),'capture display must be a nonnegative integer in range.');
 
 % Both wrappers reach the same optional engine backend.
 reject(@() PsychMetal('OpenWindow',struct('presentation','bad')));
@@ -413,6 +418,22 @@ assert(strcmp(id, 'PsychMetal:AudioRoute') && ~isempty(strfind(msg, 'interrupted
 fprintf('PASS: audio through MEX: devices, sounds, timed and frame-keyed playback, modulation, voice key, recording, monitor, an interruption reported at close.\n');
 
 fprintf('PASS: PsychMetal.m through the real MEX front end: windows, all shapes, noise, textures (layout), presentation, grid, diagnostics, input, modes, readback, partial updates, blending, linearization, text, the link report, offscreen windows, polygons, the clip rect, queued frames, input events, 10-bit frames, messages and identifiers.\n');
+% Standalone export uses the normal wrapper state without display startup.
+[w,rect,ifi]=PsychMetal('OpenWindow',struct('exportSize',[40 30],'refreshHz',60,'readback',true));
+assert(isequal(rect,[0 0 40 30]));
+reject(@() PsychMetal('Flip',w));
+PsychMetal('StartMovieRecording',w,fullfile(tempdir,'offscreen.mov'),struct('sound',false,'clock','virtual'));
+PsychMetal('FillRect',w,[255 0 0]);first=PsychMetal('Flip',w);
+image=PsychMetal('GetImage',w);assert(isequal(size(image),[30 40 3]));
+assert(all(all(image(:,:,1)==255)) && all(all(image(:,:,2)==0)));
+PsychMetal('FillRect',w,[0 255 0]);PsychMetal('Flip',w,first+3*ifi);
+r=PsychMetal('StopMovieRecording',w);assert(r.frames==2 && r.refreshes==4);
+PsychMetal('Close',w);
+r=PsychMetalExportDemo(fullfile(tempdir,'export-demo.mp4'),.1);assert(r.frames==6 && r.refreshes==6);
+fprintf('PASS: standalone export through MATLAB/Octave wrapper, readback, held-frame timing and demo.\n');
+assert(PsychMetal('TranscodeMovie','/tmp/frames_h264.mp4','/tmp/frames_intra.mp4','h264')==90);
+fprintf('PASS: standalone all-intra conversion through MATLAB/Octave wrapper.\n');
+
 end
 
 function reject(fn, message, id)

@@ -34,13 +34,13 @@ def raises(fn, *args, message=None, id=None, exc=pm.PsychMetalError, **kw):
 
 
 core = pm._core
-check(pm.version() == '0.9.0' and core.version() == '0.9.0', 'versions agree')
+check(pm.version() == '0.10.0' and core.version() == '0.10.0', 'versions agree')
 
 # Environment is available before opening; exporting is explicit and non-destructive.
 import json, tempfile
 from pathlib import Path
 e=pm.environment_report()
-check(e['gpuName']=='scripted GPU' and e['engineVersion']=='0.9.0' and e['schemaVersion']==1,'native environment metadata')
+check(e['gpuName']=='scripted GPU' and e['engineVersion']=='0.10.0' and e['schemaVersion']==1,'native environment metadata')
 with tempfile.TemporaryDirectory() as directory:
     path=Path(directory)/'environment.json'
     pm.export_environment_report(path)
@@ -265,7 +265,7 @@ check(during > 1000, f'a Python thread ran {during} iterations during six flips'
 # --- diagnostics --------------------------------------------------------------------------
 d = pm.diagnostic(w)
 h, s = core.diagnostic()
-check(h.shape[1] == 14 and len(s) == 25, 'raw diagnostic: 14 history columns, 25 summary fields')
+check(h.shape[1] == 14 and len(s) == 26 and isinstance(s['displayCaptured'],bool), 'raw diagnostic: 14 history columns, 26 summary fields including actual capture state')
 check(list(s)[:3] == ['confirmedPresentations', 'missingPresentedTimes', 'lastTargetErrorMs'], 'summary field order')
 check(d['summary']['flips'] == 8, 'diagnostic summary flip count')
 # A busy CI host can miss every adjacent refresh during the GIL spinner above.
@@ -929,3 +929,127 @@ for t in threads:t.join()
 del os.environ['PM_MOCK_INPUT_SERIAL']
 check(not errors,f'concurrent input callers serialize native reader state: {errors!r}')
 print('PASS: input readers do not race native counters or listener setup.')
+
+# Shared recording clock reaches the Python/native boundary; unsupported paths reject.
+w,rect,ifi=pm.open_window()
+raises(pm.start_movie_recording,w,'/tmp/virtual.mov',clock='invalid')
+pm.start_movie_recording(w,'/tmp/virtual.mov',sound=False,clock='virtual')
+first=pm.flip(w)
+assert first[0]==first[2]
+raises(pm.queue_flip,w,0)
+pm.wait_secs(.05)
+second=pm.flip(w)
+pm.wait_secs(.05)
+report=pm.stop_movie_recording(w)
+assert report['virtualClock'] and report['frames']==2 and second[0]-first[0]>=.05-1e-6
+assert report['duration']>=second[0]-first[0]+.05-1e-6
+movie,info=pm.open_movie(w,'/tmp/virtual.mov')
+assert abs(info['duration']-report['duration'])<1e-9
+pm.close_movie(movie)
+pm.close(w)
+print('PASS: Python virtual-clock recording, logical Flip/Wait results, report flag and QueueFlip rejection.')
+
+# Native playback shares the virtual export clock through the Python binding.
+w,rect,ifi=pm.open_window()
+pm.start_movie_recording(w,'/tmp/virtual-timeline.mov',sound=False,clock='virtual')
+pm.draw_stimulus(w,pm.make_stimulus('grating'),[0,0,100,100])
+timeline=pm.play_timeline(w,12,[[0,1,1,4,360,0]])
+report=pm.stop_movie_recording(w)
+assert timeline['submitted']==12 and report['frames']==12 and report['refreshes']==12
+movie,info=pm.open_movie(w,'/tmp/virtual-timeline.mov')
+pm.start_movie_recording(w,'/tmp/virtual-playback.mov',sound=False,clock='virtual')
+played=pm.play_movie(w,movie,first=0,count=3,refreshes=2)
+report=pm.stop_movie_recording(w)
+assert played['submitted']==6 and report['frames']==6 and report['refreshes']==6
+pm.close_movie(movie);pm.close(w)
+print('PASS: virtual timeline and repeated movie frames preserve their complete refresh count.')
+
+w,rect,ifi=pm.open_window()
+pm.start_movie_recording(w,'/tmp/virtual-queue.mov',sound=False,clock='virtual')
+start=pm.get_secs()+.1
+for k in range(6):
+    pm.fill_rect(w,30*k)
+    pm.queue_flip(w,start+k*ifi)
+raises(pm.queue_flip,w,start)
+pm.queue_results(w,wait=True)
+report=pm.stop_movie_recording(w)
+assert report['frames']==6 and report['refreshes']==6
+pm.close(w)
+print('PASS: virtual queued frames preserve their requested export cadence and reject reversed targets.')
+
+# A queued frame token resolves in this export, and old-session tokens reject.
+w,rect,ifi=pm.open_window()
+pm.open_audio()
+click=pm.make_sound(np.ones(48,dtype=np.float32),48000)
+pm.start_movie_recording(w,'/tmp/virtual-frame-audio.mov',clock='virtual')
+q=pm.queue_flip(w,pm.get_secs()+.1)
+voice=pm.play(click,frame=q[0],offset=.002)
+assert voice>0
+pm.queue_results(w,wait=True)
+pm.stop_movie_recording(w)
+pm.start_movie_recording(w,'/tmp/virtual-frame-audio-new.mov',sound=False,clock='virtual')
+raises(pm.play,click,frame=q[0])
+pm.flip(w);pm.stop_movie_recording(w)
+pm.close_sound(click);pm.close_audio();pm.close(w)
+print('PASS: frame-keyed audio during virtual recording and stale-session token rejection.')
+
+# Standalone canvas shares drawing/readback/recording state with window sessions.
+for size in [(0,20),(20,1),(8193,2),(8192,8192),(10.5,20)]:
+    raises(pm.open_export,*size)
+raises(pm.open_export,20,20,refresh_hz=float('nan'))
+w,rect,ifi=pm.open_export(40,30,refresh_hz=60,readback=True)
+np.testing.assert_array_equal(rect,[0,0,40,30])
+assert ifi==1/60 and pm._S['startup_history'].shape==(0,6)
+raises(pm.flip,w)
+raises(pm.start_movie_recording,w,'/tmp/offscreen-live.mov',sound=False)
+pm.start_movie_recording(w,'/tmp/offscreen.mov',sound=False,clock='virtual')
+pm.fill_rect(w,[255,0,0])
+first=pm.flip(w)
+assert not pm._S['last_vbl_confirmed']
+image=pm.get_image(w)
+assert image.shape==(30,40,3) and (image[:,:,0]==255).all() and (image[:,:,1:]==0).all()
+raises(pm.queue_flip,w,pm.get_secs()+.1)
+pm.fill_rect(w,[0,255,0]);pm.flip(w,first[0]+3*ifi)
+report=pm.stop_movie_recording(w)
+assert report['frames']==2 and report['refreshes']==4
+pm.start_movie_recording(w,'/tmp/offscreen-wait.mov',sound=False,clock='virtual')
+pm.flip(w);pm.wait_secs(.1);pm.flip(w)
+report=pm.stop_movie_recording(w)
+assert report['frames']==2 and report['refreshes']==7
+pm.close(w)
+w,rect,ifi=pm.open_window();pm.close(w)
+print('PASS: standalone export dimensions, virtual-only Flip, readback, held-frame timing, queue rejection and normal-session reopen.')
+
+# Explicit movie buffering/preload and all-intra helper cross the real bindings.
+w,_,_=pm.open_window(capture_display=False)
+movie,info=pm.open_movie(w,'/tmp/frames_h264.mp4')
+assert pm.prepare_movie(w,movie,4)==4
+assert pm.prepare_movie(w,movie,0)==info['frames']
+raises(pm.prepare_movie,w,movie,0,16)
+assert pm.transcode_movie('/tmp/frames_h264.mp4','/tmp/frames_intra.mp4')==info['frames']
+raises(pm.transcode_movie,'/tmp/frames_h264.mp4','/tmp/frames_h264.mp4')
+r=pm.play_movie(w,movie,count=2,sound='off')
+assert all(key in r for key in ('audioStartOffsetMs','audioEndOffsetMs','audioVideoDriftMs'))
+pm.close(w)
+print('PASS: bounded/preloaded movie binding, all-intra conversion binding, capture opt-out and offset report fields.')
+
+# A partial movie's audio starts at its own source interval and stops with it.
+w,_,_=pm.open_window();pm.open_audio();movie,info=pm.open_movie(w,'/tmp/frames_h264.mp4')
+original_decode,original_make=core.movie_sound,core.make_sound
+captured=[]
+def test_decode(*args):
+    return np.repeat((np.arange(144000,dtype=np.float32)/144000)[:,None],2,axis=1)
+def test_make(samples,rate):
+    captured.append(samples.copy());return original_make(samples,rate)
+core.movie_sound,core.make_sound=test_decode,test_make
+try:
+    pm.play_movie(w,movie,first=30,count=2)
+    assert captured[-1].shape==(3200,2) and abs(float(captured[-1][0,0])-1/3)<1e-6
+    pm.play_movie(w,movie,first=31,count=2)
+    assert len(pm._S['movies'][movie]['sounds'])==1 and pm.audio_status()['sounds']==1
+    pm.close_audio();assert not pm._S['movies'][movie]['sounds']
+    pm.open_audio();pm.play_movie(w,movie,first=30,count=2)
+finally:
+    core.movie_sound,core.make_sound=original_decode,original_make
+    pm.close(w);pm.close_audio()
+print('PASS: partial playback crops soundtrack onset/length, bounds the cache and survives audio close/reopen.')

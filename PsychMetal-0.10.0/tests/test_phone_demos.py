@@ -112,7 +112,7 @@ print(f'PASS: {passed} checks of the phone app\'s list and its demos against the
 
 # Keep the phone catalogue in parity with every standalone Python demo but the
 # keyboard ones, the minimal template and the stimulus example (DEMO-PARITY.md).
-expected={p.stem for p in (root/'python').glob('*_demo.py')} - {'kb_demo','kb_queue_demo','minimal_demo','stimulus_demo','movie_demo'}
+expected={p.stem for p in (root/'python').glob('*_demo.py')} - {'kb_demo','kb_queue_demo','minimal_demo','stimulus_demo'}
 check(expected <= listed, f'all non-keyboard demos listed: missing {expected-listed}')
 check(not {'kb_demo','kb_queue_demo'} & listed, 'keyboard demos excluded')
 

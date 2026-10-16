@@ -508,10 +508,18 @@ try
   check('OpenMovie reports frames, rate, size and sound', @() assert(movieInfo.frames == 90 && ...
       abs(movieInfo.frameRate - 30) < 1e-6 && movieInfo.width == 160 && movieInfo.height == 96 && ...
       movieInfo.soundChannels == 2 && movieInfo.constantRate));
+  reject('TranscodeMovie: same destination refused', @() inventoryPM('TranscodeMovie', movieFile, movieFile, 'h264'));
+  reject('TranscodeMovie: unsupported codec refused', @() inventoryPM('TranscodeMovie', movieFile, [tempname '.mp4'], 'wrong'));
+  check('PrepareMovie: bounded lookahead', @() assert(inventoryPM('PrepareMovie', movie, 4, 64*1024*1024)==4));
+  reject('PrepareMovie: negative count', @() inventoryPM('PrepareMovie', movie, -1));
+  reject('PrepareMovie: fractional budget', @() inventoryPM('PrepareMovie', movie, 4, 1.5));
   check('MovieFrameTimes: one per frame, 1/30 s apart', @() assert(numel(inventoryPM('MovieFrameTimes', movie)) == 90 && ...
       all(abs(diff(inventoryPM('MovieFrameTimes', movie)) - 1/30) < 1e-9)));
   % In order, back, forward past a key frame, and the last; numbered from 1 here.
   check('DrawMovieFrame draws the frame asked for, in any order', @() assertMovieFrames(w, movie, [1 2 3 38 4 90 17]));
+  check('MovieSound: the track from the first frame, clicks on whole seconds', ...
+      @() assertMovieSound(inventoryPM('MovieSound', movie, 48000), 48000));
+  reject('MovieSound at 1 Hz rejected', @() inventoryPM('MovieSound', movie, 1));
   check('RefreshesPerFrame: nearest whole number, a half rounded up', @() assert(isequal( ...
       [inventoryPM('RefreshesPerFrame', 60, 30), inventoryPM('RefreshesPerFrame', 60, 24), ...
        inventoryPM('RefreshesPerFrame', 120, 50), inventoryPM('RefreshesPerFrame', 60, 120)], [2 3 2 1])));
@@ -526,6 +534,14 @@ try
   reject('PlayMovie with an unknown sound mode rejected', @() inventoryPM('PlayMovie', w, movie, struct('sound', 'loud')));
   reject('PlayMovie sound resample without audio rejected', @() inventoryPM('PlayMovie', w, movie, struct('count', 2, 'sound', 'resample')));
   reject('PlayMovie with an unknown option rejected', @() inventoryPM('PlayMovie', w, movie, struct('speed', 2)));
+  check('StartMovieRecording and StopMovieRecording: every frame at the refresh it was aimed at', ...
+      @() assertRecording(w, rbRect));
+  reject('StartMovieRecording with an unknown codec rejected', ...
+      @() inventoryPM('StartMovieRecording', w, fullfile(tempdir, 'x.mov'), struct('codec', 'vp9')));
+  reject('StartMovieRecording of ProRes to .mp4 rejected', @() inventoryPM('StartMovieRecording', w, fullfile(tempdir, 'x.mp4')));
+  reject('StartMovieRecording at scale 0 rejected', ...
+      @() inventoryPM('StartMovieRecording', w, fullfile(tempdir, 'x.mov'), struct('scale', 0)));
+  reject('StopMovieRecording when not recording rejected', @() inventoryPM('StopMovieRecording', w));
   check('CloseMovie', @() inventoryPM('CloseMovie', movie));
   reject('a closed movie cannot be drawn', @() inventoryPM('DrawMovieFrame', w, movie, 1));
   reject('CloseMovie twice rejected', @() inventoryPM('CloseMovie', movie));
@@ -614,6 +630,62 @@ for j = 1:numel(names)
  inventoryPM('CloseMovie', movie);
 end
 if ~isempty(problems), error('%s', strjoin(problems, '; ')); end
+end
+
+function drawNumber(w, rect, k)
+% The test movies' pattern across the window: 16 bars in the top half, bar i white if bit i of k is set.
+W = rect(3); H = rect(4);
+inventoryPM('FillRect', w, 0);
+bits = find(bitand(k, 2 .^ (0:15)));
+if ~isempty(bits)
+ inventoryPM('FillRect', w, 255, [W * (bits - 1) / 16; zeros(1, numel(bits)); W * bits / 16; H / 2 + zeros(1, numel(bits))]);
+end
+end
+
+function assertRecording(w, rect)
+% Ten frames on consecutive refreshes, then one three refreshes later, queued so their aims are exact;
+% recorded, opened as a movie, and each frame read back by its number.
+path = [tempname '.mov'];
+cleanup = onCleanup(@() deleteIfThere(path)); %#ok<NASGU>
+inventoryPM('StartMovieRecording', w, path, struct('scale', 0.25));
+try
+ inventoryPM('StartMovieRecording', w, path);
+ error('a second StartMovieRecording was accepted');
+catch e
+ if strcmp(e.message, 'a second StartMovieRecording was accepted'), rethrow(e); end
+end
+ifi = inventoryPM('GetFlipInterval', w);
+t0 = inventoryPM('GetSecs') + 10 * ifi;
+for k = 0:10
+ drawNumber(w, rect, k);
+ inventoryPM('QueueFlip', w, t0 + (k + 2 * (k == 10)) * ifi);
+end
+inventoryPM('QueueResults', w);
+report = inventoryPM('StopMovieRecording', w);
+assert(report.frames == 11 && report.refreshes == 13 && strcmp(report.codec, 'prores4444'), 'recording report');
+[movie, info] = inventoryPM('OpenMovie', w, path);
+steps = round(diff(inventoryPM('MovieFrameTimes', movie)) * report.refreshHz * 1000) / 1000;
+assert(info.frames == 11 && isequal(steps(:)', [ones(1, 9) 3]), 'recorded frame times');
+for k = 0:10
+ inventoryPM('FillRect', w, 0);
+ inventoryPM('DrawMovieFrame', w, movie, k + 1, [], [0 0 160 96], 0, 0);
+ inventoryPM('Flip', w);
+ seen = movieFrameNumber(inventoryPM('GetImage', w, [0 0 160 96]));
+ if seen ~= k, inventoryPM('CloseMovie', movie); error('recorded frame %d plays back as %d', k, seen); end
+end
+inventoryPM('CloseMovie', movie);
+end
+
+function deleteIfThere(path)
+if exist(path, 'file'), delete(path); end
+end
+
+function assertMovieSound(samples, rate)
+% make_test_movie's sound: 90 frames at 30 per second is 3 s; a click at 0.9 starting each second.
+assert(size(samples, 2) == 2 && abs(size(samples, 1) - 3 * rate) <= 1025, 'sound length');
+loud = find(abs(samples(:, 1)) > .5);
+starts = (loud([true; diff(loud) > rate / 10]) - 1) / rate;
+assert(numel(starts) == 3 && all(abs(starts(:)' - [0 1 2]) < .002), 'clicks at %s', mat2str(starts'));
 end
 
 function assertPlayMovie(w, movie)

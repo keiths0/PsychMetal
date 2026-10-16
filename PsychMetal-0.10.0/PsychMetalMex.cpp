@@ -267,7 +267,7 @@ mxArray *diagnosticStruct(const pm::DiagnosticSummary &d) {
         "leadEstimateMs", "pipelineEstimateMs", "gpuEstimateMs", "readbackEnabled",
         "shapesAppended", "shapesEncoded",
         "texturesCreated", "texturesDrawn", "textureAllocations", "lastTextureUploadMs",
-        "lastShapeRect", "lastShapeColor", "screenSafeAreaInsets", "backingScaleFactor"};
+        "lastShapeRect", "lastShapeColor", "screenSafeAreaInsets", "backingScaleFactor", "displayCaptured"};
     mxArray *s = mxCreateStructMatrix(1, 1, (int)(sizeof(n) / sizeof(n[0])), n);
     auto num = [&](const char *f, double v) { mxSetField(s, 0, f, mxCreateDoubleScalar(v)); };
     auto r4 = [&](const char *f, const pm::Rect4 &v) { mxSetField(s, 0, f, rect4(v)); };
@@ -296,6 +296,7 @@ mxArray *diagnosticStruct(const pm::DiagnosticSummary &d) {
     r4("lastShapeColor", d.lastShapeColor);
     r4("screenSafeAreaInsets", d.screenSafeAreaInsets);
     num("backingScaleFactor", d.backingScaleFactor);
+    mxSetField(s,0,"displayCaptured",mxCreateLogicalScalar(d.displayCaptured));
     return s;
 }
 
@@ -533,9 +534,16 @@ void dispatch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
         plhs[0] = startupMatrix(pm::confirmStartup());
         return;
     }
+    if(is("OpenExport")) {
+        if(nrhs!=5||nlhs!=6) fail("OpenExport takes width,height,refreshHz,readback and returns six session fields.");
+        auto w=unsignedScalar(prhs[1],"export width",8192),h=unsignedScalar(prhs[2],"export height",8192);
+        auto r=pm::openExport(w,h,scalar(prhs[3],"refreshHz"),unsignedScalar(prhs[4],"readback",1)!=0);
+        const double values[]={r.pixelWidth,r.pixelHeight,r.ifi,r.pointWidth,r.pointHeight,double(r.sessionToken)};
+        for(int i=0;i<6;i++) plhs[i]=mxCreateDoubleScalar(values[i]);return;
+    }
     if (is("Open")) {
-        if ((nrhs < 3 || nrhs > 7) || nlhs != 6)
-            fail("Open needs screenIndex,drawableCount[,refreshHz[,readback[,bitDepth[,displayLink]]]] "
+        if ((nrhs < 3 || nrhs > 8) || nlhs != 6)
+            fail("Open needs screenIndex,drawableCount[,refreshHz[,readback[,bitDepth[,displayLink[,captureDisplay]]]]] "
                  "and returns width,height,ifi,pointWidth,pointHeight,sessionToken.");
         pm::OpenOptions o;
         o.screenIndex = scalar(prhs[1], "screen index");
@@ -544,7 +552,8 @@ void dispatch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
         if (nrhs >= 4 && !mxIsEmpty(prhs[3])) o.refreshHz = scalar(prhs[3], "refreshHz");
         if (nrhs >= 5) o.readback = unsignedScalar(prhs[4], "readback", 1) != 0;
         if (nrhs >= 6) o.bitDepth = unsignedScalar(prhs[5], "bit depth", 10);
-        if (nrhs == 7) o.displayLink = unsignedScalar(prhs[6], "display link", 1) != 0;
+        if (nrhs >= 7) o.displayLink = unsignedScalar(prhs[6], "display link", 1) != 0;
+        if(nrhs==8)o.captureDisplay=unsignedScalar(prhs[7],"capture display",1)!=0;
         pm::OpenResult r = pm::openSession(o);
         plhs[0] = mxCreateDoubleScalar(r.pixelWidth);
         plhs[1] = mxCreateDoubleScalar(r.pixelHeight);
@@ -730,17 +739,27 @@ void dispatch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
         pm::MovieInfo i;
         uint64_t handle = pm::openMovie(text(prhs[1], "movie path"), i);
         const char *names[] = {"width", "height", "frames", "frameRate", "duration", "constantRate",
-                               "soundChannels", "soundRate", "codec"};
-        mxArray *info = mxCreateStructMatrix(1, 1, 9, names);
+                               "soundChannels", "soundRate", "codec", "keyframeInterval"};
+        mxArray *info = mxCreateStructMatrix(1, 1, 10, names);
         auto number = [&](const char *f, double v) { mxSetField(info, 0, f, mxCreateDoubleScalar(v)); };
         number("width", i.width); number("height", i.height); number("frames", i.frames);
         number("frameRate", i.frameRate); number("duration", i.duration);
         mxSetField(info, 0, "constantRate", mxCreateLogicalScalar(i.constantRate));
+        number("keyframeInterval",i.keyframeInterval);
         number("soundChannels", i.soundChannels); number("soundRate", i.soundRate);
         mxSetField(info, 0, "codec", utf8String(i.codec));
         plhs[0] = mxCreateDoubleScalar((double)handle);
         plhs[1] = info;
         return;
+    }
+    if(is("TranscodeMovie")) {
+        if(nrhs!=4||nlhs!=1)fail("TranscodeMovie takes source, destination and codec; returns frames.");
+        plhs[0]=mxCreateDoubleScalar((double)pm::transcodeMovie(text(prhs[1],"source"),text(prhs[2],"destination"),text(prhs[3],"codec")));return;
+    }
+    if(is("PrepareMovie")) {
+        if(nrhs!=4 || nlhs!=1) fail("PrepareMovie takes movie, frames and maxBytes; returns resident frames.");
+        plhs[0]=mxCreateDoubleScalar((double)pm::prepareMovie(unsignedScalar(prhs[1],"movie",pm::kMaxId),
+            (uint32_t)unsignedScalar(prhs[2],"frames",256),unsignedScalar(prhs[3],"maxBytes",2147483648ull)));return;
     }
     if (is("MovieFrameTimes")) {
         if (nrhs != 2 || nlhs != 1) fail("MovieFrameTimes takes a movie handle and returns the frame times.");
@@ -778,8 +797,8 @@ void dispatch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
                                timeArgument(prhs[7], "when"), unsignedScalar(prhs[8], "sound", pm::kMaxId),
                                scalar(prhs[9], "gain"));
         const char *names[] = {"submitted", "firstToken", "lastToken", "frames", "cancelled", "start", "firstPresented",
-                               "shown", "late", "lateRefreshes", "expectedRefreshHz", "longestIntervalMs", "voice"};
-        plhs[0] = mxCreateStructMatrix(1, 1, 13, names);
+                               "shown", "late", "lateRefreshes", "expectedRefreshHz", "longestIntervalMs", "voice", "audioStartOffsetMs", "audioEndOffsetMs", "audioVideoDriftMs"};
+        plhs[0] = mxCreateStructMatrix(1, 1, 16, names);
         auto number = [&](const char *f, double v) { mxSetField(plhs[0], 0, f, mxCreateDoubleScalar(v)); };
         number("submitted", (double)r.submitted); number("firstToken", (double)r.firstToken);
         number("lastToken", (double)r.lastToken); number("frames", (double)r.frames);
@@ -788,6 +807,30 @@ void dispatch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]) {
         number("shown", (double)r.shown); number("late", (double)r.late); number("lateRefreshes", (double)r.lateRefreshes);
         number("expectedRefreshHz", r.expectedRefreshHz); number("longestIntervalMs", r.longestIntervalMs);
         number("voice", (double)r.voice);
+        number("audioStartOffsetMs",r.audioStartOffsetMs);number("audioEndOffsetMs",r.audioEndOffsetMs);number("audioVideoDriftMs",r.audioVideoDriftMs);
+        return;
+    }
+    if (is("StartMovieRecording")) {
+        if ((nrhs != 5 && nrhs != 6) || nlhs != 0) fail("StartMovieRecording takes path, codec, scale, sound and an optional virtual-clock flag.");
+        pm::startMovieRecording(text(prhs[1], "movie path"), text(prhs[2], "codec"), scalar(prhs[3], "scale"),
+                                unsignedScalar(prhs[4], "sound", 1) != 0, nrhs==6 && unsignedScalar(prhs[5], "virtual clock", 1)!=0);
+        return;
+    }
+    if (is("StopMovieRecording")) {
+        if (nrhs != 1 || nlhs != 1) fail("StopMovieRecording returns one struct.");
+        pm::MovieRecording r = pm::stopMovieRecording();
+        const char *names[] = {"path", "codec", "width", "height", "frames", "refreshes", "refreshHz", "duration",
+                               "late", "unreported", "sound", "soundSeconds", "soundLostSeconds", "virtualClock"};
+        plhs[0] = mxCreateStructMatrix(1, 1, 14, names);
+        auto number = [&](const char *f, double v) { mxSetField(plhs[0], 0, f, mxCreateDoubleScalar(v)); };
+        mxSetField(plhs[0], 0, "path", utf8String(r.path));
+        mxSetField(plhs[0], 0, "codec", utf8String(r.codec));
+        number("width", r.width); number("height", r.height); number("frames", r.frames);
+        number("refreshes", r.refreshes); number("refreshHz", r.refreshHz); number("duration", r.duration);
+        number("late", r.late); number("unreported", r.unreported);
+        mxSetField(plhs[0], 0, "sound", mxCreateLogicalScalar(r.sound));
+        number("soundSeconds", r.soundSeconds); number("soundLostSeconds", r.soundLostSeconds);
+        mxSetField(plhs[0],0,"virtualClock",mxCreateLogicalScalar(r.virtualClock));
         return;
     }
     if (is("CloseMovie")) {

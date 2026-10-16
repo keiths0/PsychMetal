@@ -10,6 +10,9 @@ def function(signature):
  a=s.index(signature);return s[a:s.index('\n}',a)+2]
 code=r'''
 #include "PsychMetalEngine.h"
+#include "PsychMetalRecordingClock.h"
+static pm::recording::Clock recordingClock;
+static bool exportSession=false;
 #include "PsychMetalTimeline.h"
 #include "PsychMetalLiveTimeline.h"
 #include "PsychMetalKeyframes.h"
@@ -35,7 +38,9 @@ pm::timeline::LiveState liveTimeline;
 PMDrawItem drawList[4];PMTextureRef drawTextureRefs[4],drawCoverageRefs[4];
 pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 double gridPeriod(){return 1/119.98;}
-double CACurrentMediaTime(){return 0;}
+double wall=0,workDelay=0;
+double CACurrentMediaTime(){return wall;}
+std::vector<double> logicalTimes;
 bool waitQueueIdleLocked(){return true;}
 // When the display showed each frame: one refresh apart, except that the frame
 // at lateAt is a refresh late (and so are those after it), and the one at
@@ -50,7 +55,8 @@ bool injectLive=false;
 std::vector<PMDrawItem> seen;
 std::weak_ptr<int> retained,retainedMask;
 static void readKeyboardState(bool *keys,const bool*){keys[40]=int(seen.size())==escapeAt;}
-pm::FlipResult pm::flip(double){
+pm::FlipResult pm::flip(double target){
+ if(recordingClock.active()){wall+=workDelay;recordingClock.beginFlip(wall,target);wall+=workDelay;logicalTimes.push_back(recordingClock.finishFlip(wall));}
  assert(!retained.expired() && !retainedMask.expired());
  assert(drawCount==2 && drawList[1].type==0); // static scene item is replayed too
  if(int(seen.size())==failAt) fail("injected presentation failure");
@@ -74,6 +80,13 @@ void reset(){
 }
 int main(){
  double t[]={0,1,1,4,360,0, 0,0,0,4,.5,.5, 0,2,0,4,5,0};
+ for(double delay:{.001,.2,2.0}) {
+  reset();wall=100;workDelay=delay;logicalTimes.clear();recordingClock.begin(wall,gridPeriod());
+  pm::playTimeline(8,view(t,3));assert(logicalTimes.size()==8);
+  for(int i=0;i<8;i++)assert(std::abs(logicalTimes[i]-100-i*gridPeriod())<1e-8);
+  const double ended=recordingClock.now(wall);wall+=.1;
+  assert(std::abs(recordingClock.now(wall)-ended-.1)<1e-8);recordingClock.end();
+ }
  reset();auto result=pm::playTimeline(8,view(t,3));
  assert(result.submitted==8 && !result.cancelled && result.firstToken==101 && result.lastToken==108);
  assert(fabs(result.expectedRefreshHz-119.98)<1e-9);

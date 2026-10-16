@@ -50,6 +50,10 @@ def open_audio(device=None, rate=None, channels=2, buffer_frames=64, routes='wir
 def close_audio():
     """Stops every sound and recording at once and closes audio. Safe to call twice."""
     _core.close_audio()
+    from . import _S
+    if _S is not None:
+        for movie in _S['movies'].values():
+            movie['sounds'].clear()  # handles belonged to the closed audio Session
 
 
 def audio_status():

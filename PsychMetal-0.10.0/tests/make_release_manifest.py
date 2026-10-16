@@ -7,10 +7,11 @@ Run from anywhere after the final builds and validation:
 
 The payload is every file git would commit here (tracked, or untracked and not
 ignored), plus this version's two phone wheels, which phone/.gitignore ignores
-and the release commits with `git add -f`. The manifest is sorted and lists
+and which are included as explicit release assets. The manifest is sorted and lists
 itself and SHA256SUMS; SHA256SUMS covers every listed file except itself.
 tests/package_release.py checks the result.
 
+RELEASE-EXCLUDES.txt lists local-only files/directories omitted from the payload.
 Refuses symbolic links, a missing or extra phone wheel, and a committed binary
 older than the native sources it is built from. Warns while CHANGELOG.md or
 VALIDATION.md still describe a release in development.
@@ -33,6 +34,18 @@ if wheels != expected:
     raise SystemExit('phone/wheels must hold exactly this version\'s two wheels:\n  ' + '\n  '.join(expected) +
                      '\nfound:\n  ' + ('\n  '.join(wheels) or '(none)'))
 names |= set(wheels) | {MANIFEST, SUMS}
+# Explicit local-only paths must not enter a release through an untracked-file
+# scan. Preserve them on disk; this only selects the payload.
+excluded = []
+for line in (root / 'RELEASE-EXCLUDES.txt').read_text().splitlines():
+    name = line.strip()
+    if not name or name.startswith('#'): continue
+    path = Path(name)
+    if path.is_absolute() or '..' in path.parts or name in ('.', './'):
+        raise SystemExit('Unsafe release exclusion: ' + name)
+    excluded.append(name)
+names = {n for n in names if not any(n.startswith(x) if x.endswith('/') else n == x for x in excluded)}
+
 
 for name in names:
     if (root / name).is_symlink():

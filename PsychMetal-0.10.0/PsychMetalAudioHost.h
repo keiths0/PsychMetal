@@ -22,6 +22,7 @@
 #include <limits>
 #include <functional>
 #include <memory>
+#include <map>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -33,6 +34,8 @@ namespace pm { namespace audio {
 struct Platform {
     // A queued or prepared frame's projected presentation time; NaN if unknown.
     std::function<double(uint64_t)> frameProjected;
+    // Actual device target when frameProjected is a logical export time.
+    std::function<double(uint64_t)> framePhysical;
     // A frame's confirmed presentation time; NaN until the display reports it.
     std::function<double(uint64_t)> framePresented;
     // Converts planar samples from one rate to another, once, off the callback.
@@ -40,6 +43,9 @@ struct Platform {
                                      double from, double to, uint64_t &outFrames)> convertRate;
     // Takes "the device or route changed" since it was last asked.
     std::function<bool()> takeLost;
+    std::function<double()> now;
+    std::function<double(double)> outputTime; // logical requests -> physical device time during export
+    std::function<bool()> playable; // false while iOS has interrupted/deactivated the session
     std::function<void(const char *id, const char *message)> warn;
 };
 
@@ -50,6 +56,8 @@ public:
     Mixer mixer;
     Recorder recorder;
     AudioInfo info;
+    // Host-thread observer for generated movie audio; never called by Core Audio.
+    std::function<void(const Command &, std::shared_ptr<const Sound>, bool frameKeyed)> observeOutput;
 
     explicit Session(Platform platform) : platform_(std::move(platform)) {}
 
@@ -120,17 +128,24 @@ public:
 
     uint64_t play(uint64_t handle, double when, uint64_t frame, double offset, double gain, uint32_t repeats) {
         collect();
+        if (platform_.playable && !platform_.playable())
+            sessionFail("Audio is interrupted; wait for the system to permit resuming, or close and reopen audio.");
         auto found = sounds_.find(handle);
         if (found == sounds_.end()) sessionFail("Invalid or closed sound handle.");
         if (!std::isfinite(gain) || gain < 0 || gain > 1000) sessionFail("gain must be 0 to 1000.");
         if (!std::isfinite(offset) || std::fabs(offset) > 3600) sessionFail("offset must be finite, within an hour.");
         checkWhen(when);
+        double physicalFrame=NAN;
         if (frame) {
             if (!std::isnan(when)) sessionFail("Give a time or a frame, not both.");
             double projected = platform_.frameProjected(frame);
             if (!std::isfinite(projected))
                 sessionFail("That frame is not queued; use a token from QueueFlip.");
             when = projected + offset;
+            if(platform_.framePhysical) {
+                physicalFrame=platform_.framePhysical(frame)+offset;
+                if(!std::isfinite(physicalFrame)) sessionFail("That frame is no longer available.");
+            }
         } else if (offset != 0) {
             if (std::isnan(when)) sessionFail("offset needs a time or a frame.");
             when += offset;
@@ -141,14 +156,16 @@ public:
         uint64_t voice = newId(nextVoice_, "Voice ids");
         Command c;
         c.kind = Command::Play;
+        c.generation = mixer.interruptionGeneration.load();
         c.voice = voice;
         c.sound = found->second.get();
         c.when = when;
         c.gain = (float)gain;
         c.repeats = repeats;
         voices_.emplace(voice, Voice{found->second, frame});     // kept until the voice ends
-        try { push(mixer.commands, c, "output"); }
+        try { pushOutput(c,physicalFrame); }
         catch (...) { voices_.erase(voice); throw; }
+        if (observeOutput) observeOutput(c, found->second,frame!=0);
         return voice;
     }
 
@@ -157,13 +174,18 @@ public:
         checkWhen(when);
         if (voice && !voices_.count(voice)) {
             if (voice >= nextVoice_.load()) sessionFail("No sound was played with that voice id.");
-            return;                                               // already ended: nothing to stop
+            if (observeOutput) {
+                Command c; c.kind=Command::Stop; c.voice=voice; c.when=when;
+                observeOutput(c, {},false);
+            }
+            return;                                               // live voice ended; export may still be active
         }
         Command c;
         c.kind = voice ? Command::Stop : Command::StopAll;
         c.voice = voice;
         c.when = when;
-        push(mixer.commands, c, "output");
+        pushOutput(c);
+        if (observeOutput) observeOutput(c, {},false);
     }
 
     void modulate(uint64_t voice, double hz, double phase, double depth, double when) {
@@ -175,7 +197,12 @@ public:
         if (!std::isfinite(depth) || depth < 0 || depth > 1) sessionFail("depth must be 0 to 1.");
         if (!voices_.count(voice)) {
             if (voice == 0 || voice >= nextVoice_.load()) sessionFail("No sound was played with that voice id.");
-            return;                                               // already ended: nothing to modulate
+            if (observeOutput) {
+                Command c; c.kind=Command::Modulate; c.voice=voice; c.when=when;
+                c.modulation.hz=hz; c.modulation.phase=phase; c.modulation.depth=(float)depth;
+                observeOutput(c, {},false);
+            }
+            return;                                               // live voice ended; export may still be active
         }
         Command c;
         c.kind = Command::Modulate;
@@ -184,15 +211,19 @@ public:
         c.modulation.hz = hz;
         c.modulation.phase = phase;
         c.modulation.depth = (float)depth;
-        push(mixer.commands, c, "output");
+        pushOutput(c);
+        if (observeOutput) observeOutput(c, {},false);
     }
 
     uint64_t startRecording(double when) {
         requireInput();
         collect();
+        if (platform_.playable && !platform_.playable())
+            sessionFail("Audio is interrupted; wait for the system to permit resuming, or close and reopen audio.");
         checkWhen(when);
         InputCommand c;
         c.kind = InputCommand::Record;
+        c.generation = recorder.interruptionGeneration.load();
         c.id = newId(nextRecording_, "Recording ids");
         c.when = when;
         push(recorder.commands, c, "input");
@@ -233,6 +264,8 @@ public:
     uint64_t voiceKey(double threshold, double when, double window, uint32_t minimum) {
         requireInput();
         collect();
+        if (platform_.playable && !platform_.playable())
+            sessionFail("Audio is interrupted; wait for the system to permit resuming, or close and reopen audio.");
         checkWhen(when);
         if (!(threshold > 0 && threshold <= 1)) sessionFail("threshold must be more than 0 and at most 1.");
         double frames = std::round(window * info.inputRate);
@@ -241,6 +274,7 @@ public:
         if (minimum < 1 || minimum > frames) sessionFail("minimum must be 1 to the window's length in samples.");
         InputCommand c;
         c.kind = InputCommand::ArmKey;
+        c.generation = recorder.interruptionGeneration.load();
         c.id = newId(nextKey_, "Voice key ids");
         c.when = when;
         c.threshold = (float)threshold;
@@ -264,6 +298,11 @@ public:
             std::this_thread::sleep_for(std::chrono::microseconds(200));
         }
         sessionFail("Audio input has not delivered that much yet; is the input running?");
+    }
+
+    struct VoiceTiming {double start=NAN,end=NAN;bool finished=false;};
+    VoiceTiming timing(uint64_t voice) {
+        collect();auto found=timings_.find(voice);return found==timings_.end()?VoiceTiming{}:found->second;
     }
 
     std::vector<AudioEvent> results() {
@@ -294,6 +333,7 @@ private:
     std::unordered_map<uint64_t, Voice> voices_;
     std::vector<uint64_t> retiring_;      // read from the retired ring; reused, so collect allocates rarely
     std::deque<AudioEvent> pending_;
+    std::map<uint64_t,VoiceTiming> timings_;
     // Ids count up for the whole process, not per session, so a handle kept across
     // CloseAudio and OpenAudio can never name a new sound, voice, recording or key.
     static inline std::atomic<uint64_t> nextSound_{1}, nextVoice_{1}, nextRecording_{1}, nextKey_{1};
@@ -309,6 +349,11 @@ private:
     bool recordingOpen_ = false;          // asked for, and not yet ended
     double recordingStart_ = NAN;
 
+    void pushOutput(Command c, double physical=NAN) {
+        if(std::isfinite(physical)) c.when=physical;
+        else if(platform_.outputTime && std::isfinite(c.when)) c.when=platform_.outputTime(c.when);
+        push(mixer.commands,c,"output");
+    }
     static void checkWhen(double when) {
         if (std::isinf(when)) sessionFail("when must be a GetSecs time, or NaN for at once.");
     }
@@ -326,7 +371,8 @@ private:
         AudioEventStatus status = e.status == Event::OnTime ? AudioEventStatus::OnTime
                                 : e.status == Event::Late ? AudioEventStatus::Late
                                 : e.status == Event::Finished ? AudioEventStatus::Finished
-                                : e.status == Event::Stopped ? AudioEventStatus::Stopped : AudioEventStatus::Refused;
+                                : e.status == Event::Stopped ? AudioEventStatus::Stopped
+                                : e.status == Event::Interrupted ? AudioEventStatus::Interrupted : AudioEventStatus::Refused;
         return {e.kind == Event::Start ? AudioEventKind::SoundStart : AudioEventKind::SoundEnd,
                 e.voice, e.requested, e.time, status, NAN, NAN, 0, NAN};
     }
@@ -334,7 +380,8 @@ private:
         AudioEventStatus status = e.status == InputEvent::OnTime ? AudioEventStatus::OnTime
                                 : e.status == InputEvent::Late ? AudioEventStatus::Late
                                 : e.status == InputEvent::Stopped ? AudioEventStatus::Stopped
-                                : e.status == InputEvent::Full ? AudioEventStatus::Full : AudioEventStatus::Triggered;
+                                : e.status == InputEvent::Full ? AudioEventStatus::Full
+                                : e.status == InputEvent::Interrupted ? AudioEventStatus::Interrupted : AudioEventStatus::Triggered;
         AudioEventKind kind = e.kind == InputEvent::RecordStart ? AudioEventKind::RecordStart
                             : e.kind == InputEvent::RecordEnd ? AudioEventKind::RecordEnd : AudioEventKind::Key;
         double frames = (e.kind == InputEvent::RecordStart || e.frames == InputEvent::kNone) ? NAN : (double)e.frames;
@@ -351,6 +398,10 @@ private:
         while (mixer.retired.pop(id)) retiring_.push_back(id);
         Event e;
         while (mixer.events.pop(e)) {
+            auto &timing=timings_[e.voice];
+            if(e.kind==Event::Start) timing.start=e.time;
+            else {timing.end=e.time;timing.finished=e.status==Event::Finished;}
+            while(timings_.size()>1024) timings_.erase(timings_.begin());
             AudioEvent out = fromOutput(e);
             auto voice = voices_.find(e.voice);
             if (voice != voices_.end()) out.frameToken = voice->second.frame;
@@ -367,6 +418,11 @@ private:
         const bool lost = platform_.takeLost && platform_.takeLost();
         const bool stopped = mixer.gap.exchange(false, std::memory_order_relaxed);
         if (lost || stopped) {
+            if (lost && platform_.now) {
+                const double at = platform_.now();
+                mixer.interrupt(at);
+                if (info.input) recorder.interrupt(at);
+            }
             info.timed = false; // rates and latency belong to the route opened originally
             platform_.warn(kWarnAudioRoute, "The audio device or route changed, the session was interrupted, "
                            "or the output stopped for a while. Sounds scheduled before then may be late or "

@@ -46,8 +46,8 @@ constexpr size_t PM_POLYGON_POINTS=65536;
 static int waitRelative(double) { throw std::runtime_error("Unexpected busy slot"); }
 static void fail(const char *message) { throw std::runtime_error(message); }
 using PMShaderRef=PMTextureRef;
-static bool prepare(FakeCommand *command, const PMDrawItem *items, PMTextureRef *refs, NSUInteger n, PMTextureRef *coverageRefs=nullptr, PMPolygonRef *polygonRefs=nullptr) {
-    PMTextureRef empty[3];PMShaderRef shaderRefs[3];PMPolygonRef noPolygons[3];if(!coverageRefs)coverageRefs=empty;if(!polygonRefs)polygonRefs=noPolygons;
+static bool prepare(FakeCommand *command, const PMDrawItem *items, PMTextureRef *refs, NSUInteger n, PMTextureRef *coverageRefs=nullptr, PMPolygonRef *polygonRefs=nullptr, PMShaderRef *shaderRefs=nullptr) {
+    PMTextureRef empty[3];PMShaderRef noShaders[3];if(!shaderRefs)shaderRefs=noShaders;PMPolygonRef noPolygons[3];if(!coverageRefs)coverageRefs=empty;if(!polygonRefs)polygonRefs=noPolygons;
     id<MTLCommandBuffer> cb=(id<MTLCommandBuffer>)command;
 ''' + engine[start:end] + r'''
     (void)pointsWritten;
@@ -62,6 +62,9 @@ int main() { @autoreleasepool {
  PMTextureRef refs[]={std::make_shared<int>(42)}; std::weak_ptr<int> weak=refs[0];
  assert(!prepare(c,texture,refs,1)); refs[0].reset(); assert(!weak.expired());
  assert(c.handlers.count==1); assert(shapeBufferIndex==0); [c finish]; assert(weak.expired());
+ PMShaderRef custom[]={std::make_shared<int>(8)};std::weak_ptr<int> cw=custom[0];
+ assert(!prepare(c,stimulus,none,1,nullptr,nullptr,custom));custom[0].reset();
+ assert(!cw.expired() && c.handlers.count==1);[c finish];assert(cw.expired());
  PMTextureRef source[]={std::make_shared<int>(5)}, mask[]={std::make_shared<int>(6)};
  std::weak_ptr<int> sw=source[0],mw=mask[0];
  assert(!prepare(c,texture,source,1,mask));source[0].reset();mask[0].reset();

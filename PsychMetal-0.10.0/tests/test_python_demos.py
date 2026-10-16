@@ -68,6 +68,38 @@ check(report['play']['frames'] == 12 and report['play']['refreshes'] == 3 and ab
       any('so its sound is not played' in str(x.message) for x in said),
       'movie_demo: a 24 fps movie at 3 refreshes a frame on 60 Hz, 20 fps, its sound not played, then drawn frame by frame')
 
+import performance_audit
+report, text = run(performance_audit.performance_audit, 16, 10, (True, False), display='640x400@60')
+check(len(report['runs']) == 8 and all(r['confirmed'] == 10 for r in report['runs']),
+      'performance audit: both capture modes and static/private/shared plus float upload cases complete')
+
+import record_demo
+report, text = run(record_demo.record_demo, os.path.join(__import__('tempfile').gettempdir(), 'rec.mov'), 'prores4444', 1.6,
+                   display='640x400@60')
+# A refresh the scripted program itself misses (a loaded test machine) is in the movie too: the
+# check is that the movie's times are flip's, frame for frame, not that none was missed.
+check(report['paused'] == 1 and report['movieFrames'] == report['frames'] and 30.0 in report['steps']
+      and report['play']['frames'] == report['frames'] and report['recording']['sound'] is True and report['worst'] == 0,
+      'record_demo: every frame recorded at the time flip gave it, the half-second pause 30 refreshes long, '
+      f"shown again at its times ({ {k: report[k] for k in ('paused', 'movieFrames', 'frames', 'steps', 'worst')} })")
+
+# Control-C or Command-period in the window stops a program that never checks for it.
+def flips_forever():
+    w, _, _ = pm.open_window(None, 0)
+    try:
+        while True:
+            pm.flip(w)
+    finally:
+        pm.close(w)
+os.environ['PM_MOCK_INTERRUPT'] = '5'
+try:
+    run(flips_forever)
+    check(False, 'flips_forever ended without the stop chord')
+except pm.PsychMetalError as e:
+    check(e.id == 'PsychMetal:Interrupted' and pm._S is None,
+          'the stop chord ends a program at its next flip, and its own cleanup closes the window')
+del os.environ['PM_MOCK_INTERRUPT']
+
 report, text = run(mouse_rect_demo.mouse_rect_demo, 5, click=30)
 check(report['frames'] == 30 and report['confirmed'] == 30,
       f"mouse_rect_demo: stops at the click with every frame confirmed ({report['frames']})")
@@ -259,3 +291,8 @@ check(report['frames']>0,'masked image demo runs and closes its window')
 import shader_demo
 report,_=run(shader_demo.shader_demo,.1)
 check(report['frames']>0,'custom shader demo runs and closes its window')
+
+import export_demo
+r=export_demo.export_demo('/tmp/standalone-demo.mp4',.1)
+assert r['frames']==6 and r['refreshes']==6 and pm._S is None
+print('PASS: standalone Gabor export demo uses six intended refreshes and closes its canvas.')

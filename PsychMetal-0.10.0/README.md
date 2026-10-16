@@ -1,10 +1,15 @@
-# PsychMetal 0.9.0
+# PsychMetal 0.10.0
 
-Native Metal presentation, and now Core Audio sound, shared by MATLAB, Octave,
+Native Metal presentation and Core Audio sound, shared by MATLAB, Octave,
 Python and the iPhone/iPad app. The 0.7.1 App Store submission's source is at
 tag v0.7.1.
 
-New in 0.9.0: audio. Sounds start and stop on the sample nearest a GetSecs time
+New in 0.10.0: frame-indexed movie playback, movie audio, stimulus recording,
+and analytic arcs. An opt-in virtual recording clock supports Flip loops and
+generated audio, queued/native playback and standalone offscreen export;
+see [DEVELOPMENT-0.10.0.md](DEVELOPMENT-0.10.0.md).
+
+Introduced in 0.9.0: audio. Sounds start and stop on the sample nearest a GetSecs time
 or a queued frame's projected presentation, can be amplitude-modulated on the
 same clock, and are reported with the times they played. Input records on exact
 samples, with a one-shot voice key and a live monitor. See [AUDIO.md](AUDIO.md)
@@ -23,7 +28,7 @@ draggable Mac/phone demos in [MASKED-IMAGES.md](MASKED-IMAGES.md); custom
 fragment programs and the shared spiral demo in
 [CUSTOM-SHADERS.md](CUSTOM-SHADERS.md). The phone app retains timing reports and
 matching environment metadata locally, with an explicit system Share sheet.
-Video is deferred to 0.10.0. Physical GPU/device acceptance remains required;
+Movie playback and stimulus recording are included; see [MOVIES.md](MOVIES.md). Broader GPU/device acceptance remains required;
 see VALIDATION.md.
 
 ```python
@@ -47,10 +52,21 @@ prints `arm64`), then `make test PYTHON=$(which python3)`. The build compiles
 the built-in shaders with Xcode's Metal compiler; with Xcode 26 or later install
 it once with `xcodebuild -downloadComponent MetalToolchain`. Current local builds
 are ARM64: MATLAB/Python target macOS 14+, Octave uses the installed 11.3
-libraries requiring macOS 26. The phone build uses fresh 0.9.0 device and
+libraries requiring macOS 26. The phone build uses fresh 0.10.0 device and
 simulator wheels; no earlier-version wheels are copied into this tree. Generated
 Xcode projects are build outputs, not source files. See phone/README.md for
 rebuilding.
 
 Further API documentation is in AUDIO.md, GPU-STIMULI.md, DISPLAY-MODES.md,
 DISPLAY-LINK.md and READBACK.md.
+
+New in 0.10.0: [standalone Metal movie export](OFFSCREEN-EXPORT.md) renders
+without a presentation window, using the same drawing engine. Physical GPU/codec
+coverage remains limited; see VALIDATION.md.
+
+Additional 0.10.0 features: bounded movie lookahead
+and full preload (`PrepareMovie` / `prepare_movie`), all-intra conversion
+(`TranscodeMovie` / `transcode_movie`), keyframe spacing and reported A/V offsets,
+private static textures, direct float32 uploads on compatible GPUs, confirmed
+startup without a fixed one-second delay, and Mac audio device recovery.
+See [WISHLIST-0.10.0.md](WISHLIST-0.10.0.md) for APIs and validation limits.

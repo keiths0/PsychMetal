@@ -11,6 +11,7 @@
 // thread: these functions, like every engine call, have one caller at a time.
 
 #include "PsychMetalAudioHost.h"
+#include "PsychMetalOfflineAudio.h"
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 #if !PM_IOS
@@ -31,6 +32,19 @@ double hostSeconds(uint64_t ticks) {
     return (double)ticks * tb.numer / tb.denom * 1e-9;
 }
 
+#if PM_IOS
+// Notifications can outlive observer removal. Their work owns this state,
+// and Close invalidates it on the same serial queue before disposing the unit.
+struct AudioRecovery {
+    dispatch_queue_t queue = dispatch_queue_create("PsychMetal audio recovery", DISPATCH_QUEUE_SERIAL);
+    AudioComponentInstance output = nullptr;
+    pm::audio::Mixer *mixer = nullptr;
+    pm::audio::Recorder *recorder = nullptr;
+    bool closed = false;
+    std::atomic<bool> paused{false};
+};
+#endif
+
 struct Audio {
     AudioComponentInstance output = nullptr, input = nullptr;   // on iOS input == output
     std::unique_ptr<pm::audio::Session> session;
@@ -42,6 +56,9 @@ struct Audio {
     const float *inputChannels[kMaxChannels] = {};
 #if !PM_IOS
     AudioObjectID outputDevice = 0, inputDevice = 0;
+    pm::AudioOptions options;
+    bool recoveryPaused=false,recoveryClosing=false;
+    double recoveryRetry=0;
     // What opening changed on a device, to put back at close: a device's sample
     // rate is shared by every program using it.
     struct Settings {
@@ -59,6 +76,7 @@ struct Audio {
     std::vector<Watch> watched;
 #else
     id interruptionObserver = nil, routeObserver = nil;
+    std::shared_ptr<AudioRecovery> recovery = std::make_shared<AudioRecovery>();
 #endif
 };
 std::unique_ptr<Audio> audioState;
@@ -417,7 +435,12 @@ void unwatchDevices(Audio &a) {
     a.watched.clear();
 }
 
-void openMac(Audio &a, const pm::AudioOptions &o) {
+static void checkRecoveryRates(double outputRate,double inputRate,bool sharedDevice) {
+    if(sharedDevice && inputRate>0 && std::fabs(outputRate-inputRate)>.5)
+        audioFail("The fallback device cannot preserve the old distinct input/output sample rates. CloseAudio and reopen it.");
+}
+
+void openMac(Audio &a, const pm::AudioOptions &o,double inputRate=0) {
     a.outputDevice = chooseDevice(o.device, false);
     UInt32 transport = transportOf(a.outputDevice);
     a.session->info.timed = timedTransport(transport);
@@ -450,12 +473,13 @@ void openMac(Audio &a, const pm::AudioOptions &o) {
     if (o.input) {
         requireMicrophone();
         a.inputDevice = chooseDevice(o.inputDevice, true);
+        checkRecoveryRates(a.session->info.rate,inputRate,a.inputDevice==a.outputDevice);
         UInt32 inTransport = transportOf(a.inputDevice);
         uint32_t inChannels = deviceChannels(a.inputDevice, kAudioObjectPropertyScopeInput);
         if (o.inputChannels > inChannels)
             audioFail("The input device has " + std::to_string(inChannels) + " channels.");
         uint32_t inFrames = o.bufferFrames;
-        a.session->info.inputRate = configureDevice(a.inputDevice, a.inputDevice == a.outputDevice ? 0 : o.rate, inFrames,
+        a.session->info.inputRate = configureDevice(a.inputDevice, inputRate>0?inputRate:(a.inputDevice == a.outputDevice ? 0 : o.rate), inFrames,
                                                     a.inputSettings);
         a.session->info.inputBufferFrames = inFrames;
         a.session->info.inputChannels = o.inputChannels;
@@ -493,6 +517,41 @@ void closePlatform(Audio &a) {
     restoreDevice(a.inputSettings);
     restoreDevice(a.outputSettings);
     a.inputSettings = a.outputSettings = Audio::Settings{};
+}
+
+// Host-thread recovery: callbacks are stopped/disposed before buffers/settings
+// change. Loaded sounds and recording samples stay in the existing Session.
+// Preserve client rates so previously loaded PCM is not played at a new rate.
+static bool recoverMac(Audio &a) {
+    if(a.recoveryClosing)return a.lost->exchange(false);
+    const bool changed=a.lost->exchange(false);
+    const double now=CACurrentMediaTime();
+    if(!changed && !(a.recoveryPaused && now>=a.recoveryRetry)) return false;
+    a.recoveryPaused=true;a.recoveryRetry=now+1;
+    a.session->mixer.interrupt(now);a.session->recorder.interrupt(now);
+    const double rate=a.session->info.rate,inputRate=a.session->info.inputRate;
+    closePlatform(a);
+    if(a.notices) dispatch_sync(a.notices,^{}); // retired notices cannot restart a new route
+    a.lost->store(false);
+    try {
+        auto options=a.options;options.rate=rate;
+        // A removed explicit endpoint falls back to the current default. A
+        // still-present explicit endpoint remains selected.
+        UInt32 alive=0;
+        if(options.device>=0 && (!getProperty((AudioObjectID)options.device,address(kAudioDevicePropertyDeviceIsAlive),alive)||!alive)) options.device=-1;
+        alive=0;
+        if(options.input && options.inputDevice>=0 && (!getProperty((AudioObjectID)options.inputDevice,address(kAudioDevicePropertyDeviceIsAlive),alive)||!alive)) options.inputDevice=-1;
+        openMac(a,options,inputRate);
+        a.session->mixer.resumed();
+        check(AudioOutputUnitStart(a.output),"Could not restart audio output");
+        if(a.input) check(AudioOutputUnitStart(a.input),"Could not restart audio input");
+        a.recoveryPaused=false;
+    } catch(const std::exception &) {
+        closePlatform(a); // retry on the next host call after the cooldown
+    }
+    // Route changes always invalidate timing. Never resume interrupted voices.
+    a.session->info.timed=false;
+    return changed;
 }
 
 #else
@@ -574,11 +633,36 @@ void openIOS(Audio &a, const pm::AudioOptions &o) {
     // A notification already in flight can outlive observer removal and Audio.
     auto lost = a.lost;
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
-    // An interruption that begins (a call, Siri) stops audio; its end does not restart it.
+    auto recovery = a.recovery;
+    recovery->output = a.output;
+    recovery->mixer = &a.session->mixer;
+    recovery->recorder = &a.session->recorder;
     a.interruptionObserver = [nc addObserverForName:AVAudioSessionInterruptionNotification object:s queue:nil
                                          usingBlock:^(NSNotification *n) {
-        if ([n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue] == AVAudioSessionInterruptionTypeBegan)
-            lost->store(true);
+        const NSUInteger kind = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+        const NSUInteger options = [n.userInfo[AVAudioSessionInterruptionOptionKey] unsignedIntegerValue];
+        const double at = CACurrentMediaTime();
+        dispatch_async(recovery->queue, ^{
+            if (recovery->closed) return;
+            if (kind == AVAudioSessionInterruptionTypeBegan) {
+                recovery->paused.store(true);
+                recovery->mixer->interrupt(at);
+                recovery->recorder->interrupt(at);
+                lost->store(true);
+                AudioOutputUnitStop(recovery->output);
+            } else if (kind == AVAudioSessionInterruptionTypeEnded &&
+                       (options & AVAudioSessionInterruptionOptionShouldResume)) {
+                // Resume the device, not interrupted stimuli: those have ended.
+                NSError *error = nil;
+                bool restarted = false;
+                if ([[AVAudioSession sharedInstance] setActive:YES error:&error]) {
+                    recovery->mixer->resumed(); // the callback gap belongs to the known interruption
+                    restarted = AudioOutputUnitStart(recovery->output) == noErr;
+                }
+                if (restarted) recovery->paused.store(false);
+                else lost->store(true);
+            }
+        });
     }];
     // A device arriving or leaving moves the sound. The notice iOS posts for the
     // category this session has just set, or for an override, does not.
@@ -596,11 +680,18 @@ void openIOS(Audio &a, const pm::AudioOptions &o) {
     }];
 }
 void closePlatform(Audio &a) {
-    a.input = nullptr;                     // the same unit as output
-    disposeUnit(a.output);
     if (a.interruptionObserver) [NSNotificationCenter.defaultCenter removeObserver:a.interruptionObserver];
     if (a.routeObserver) [NSNotificationCenter.defaultCenter removeObserver:a.routeObserver];
     a.interruptionObserver = a.routeObserver = nil;
+    auto recovery = a.recovery;
+    dispatch_sync(recovery->queue, ^{
+        recovery->closed = true;
+        recovery->output = nullptr;
+        recovery->mixer = nullptr;
+        recovery->recorder = nullptr;
+    });
+    a.input = nullptr;                     // the same unit as output
+    disposeUnit(a.output);
     [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
 }
 #endif
@@ -609,6 +700,12 @@ void closePlatform(Audio &a) {
 
 static void audioShutdown() noexcept {
     if (!audioState) return;
+    // Explicit CloseAudio ends generated voices too, even when live voices
+    // have already retired on the physical clock during a slow export.
+    if(audioState->session && audioState->session->observeOutput) {
+        pm::audio::Command stop;stop.kind=pm::audio::Command::StopAll;stop.when=pm::now();
+        audioState->session->observeOutput(stop,{},false);
+    }
     closePlatform(*audioState);
     audioState.reset();
 }
@@ -690,6 +787,7 @@ std::vector<float> convertRate(const std::vector<float> &in, uint32_t channels, 
 }  // namespace
 
 pm::AudioInfo pm::openAudio(const pm::AudioOptions &o) { @autoreleasepool {
+    if(recordingClock.active()) fail("Open audio before starting virtual-clock recording.");
     if (audioState) fail("Audio is already open. Close it first.");
     if (o.channels < 1 || o.channels > kMaxChannels) fail("channels must be 1 to 32.");
     if (o.inputChannels < 1 || o.inputChannels > kMaxChannels) fail("inputChannels must be 1 to 32.");
@@ -701,12 +799,18 @@ pm::AudioInfo pm::openAudio(const pm::AudioOptions &o) { @autoreleasepool {
     auto a = std::make_unique<Audio>();
     Audio *ap = a.get();
     pm::audio::Platform platform;
-    platform.frameProjected = [](uint64_t token) {
+    platform.framePhysical = [](uint64_t token) {
         pthread_mutex_lock(&lock);
         Record *r = recordFor(token);
         double t = r ? r->projected : NAN;
         pthread_mutex_unlock(&lock);
         return t;
+    };
+    platform.frameProjected=[](uint64_t token) {
+        if(recordingClock.active()) return recordingClock.queuedTime(token);
+        pthread_mutex_lock(&lock);
+        Record *r=recordFor(token);const double t=r?r->projected:NAN;
+        pthread_mutex_unlock(&lock);return t;
     };
     platform.framePresented = [](uint64_t token) {
         pthread_mutex_lock(&lock);
@@ -716,7 +820,22 @@ pm::AudioInfo pm::openAudio(const pm::AudioOptions &o) { @autoreleasepool {
         return t;
     };
     platform.convertRate = convertRate;
+#if PM_IOS
     platform.takeLost = [ap] { return ap->lost->exchange(false); };
+#else
+    a->options=o;
+    platform.takeLost = [ap] {return recoverMac(*ap);};
+    platform.playable = [ap] {return !ap->recoveryPaused;};
+#endif
+    platform.now = [] { return CACurrentMediaTime(); };
+    platform.outputTime=[](double when) {
+        const double wall=CACurrentMediaTime();
+        return recordingClock.active()?wall+when-recordingClock.now(wall):when;
+    };
+#if PM_IOS
+    auto recovery = a->recovery;
+    platform.playable = [recovery] { return !recovery->paused.load(); };
+#endif
     platform.warn = [](const char *id, const char *message) { hookWarn(id, "%s", message); };
     a->session = std::make_unique<pm::audio::Session>(std::move(platform));
     try {
@@ -748,6 +867,9 @@ pm::AudioInfo pm::openAudio(const pm::AudioOptions &o) { @autoreleasepool {
 
 void pm::closeAudio() {
     @autoreleasepool {
+#if !PM_IOS
+        if(audioState)audioState->recoveryClosing=true;
+#endif
         if (audioState) audioState->session->finish();
         audioShutdown();
     }
@@ -770,3 +892,34 @@ uint64_t pm::voiceKey(double threshold, double when, double window, uint32_t min
 }
 pm::InputRecent pm::inputRecent(double seconds) { return audioSession().recent(seconds); }
 std::vector<pm::AudioEvent> pm::audioResults() { return audioSession().results(); }
+
+// For a movie being recorded (PsychMetalRecord.h): the output's rate, and a copy
+// of everything the mixer plays from now on. False when audio is not open. A
+// session opened later is not tapped.
+static bool audioOutputRate(double &rate) {
+    if (!audioState || !audioState->session) return false;
+    rate = audioState->session->info.rate;
+    return true;
+}
+static bool audioTapAttach(pm::audio::Tap *tap) {
+    if (!audioState || !audioState->session) return false;
+    audioState->session->mixer.tap.attach(tap);
+    return true;
+}
+static void audioTapDetach(pm::audio::Tap *tap) {
+    if (!audioState || !audioState->session) return;
+    audioState->session->mixer.tap.detach(tap);
+}
+
+// Offline audio observes only commands issued during this export. Existing live
+// voices must be stopped first; no unsynchronized copy of callback state occurs.
+static void audioOfflineAttach(const std::shared_ptr<pm::audio::OfflineAudio> &offline) {
+    if(!audioState || !audioState->session) return;
+    std::weak_ptr<pm::audio::OfflineAudio> weak=offline;
+    audioState->session->observeOutput=[weak](const pm::audio::Command &c,std::shared_ptr<const pm::audio::Sound> sound,bool frameKeyed) {
+        if(auto out=weak.lock()) out->capture(c,std::move(sound),pm::now(),frameKeyed);
+    };
+}
+static void audioOfflineDetach() {
+    if(audioState && audioState->session) audioState->session->observeOutput={};
+}

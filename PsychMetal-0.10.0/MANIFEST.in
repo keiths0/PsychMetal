@@ -1,6 +1,6 @@
 # The source distribution: what pip needs to build the extension, and nothing
 # else. The prebuilt binaries in the repository are left out; pip builds its own.
-include PsychMetalDisplayLink.h PsychMetalCustomShader.h PsychMetalLiveTimeline.h PsychMetalKeyframes.h PsychMetalTimeline.h PsychMetalReadback.h PsychMetalEngine.h PsychMetalInternal.h PsychMetalKeyboardQueue.h PsychMetalShaders.h PsychMetalIOS.h PsychMetalAudio.h PsychMetalAudioHost.h PsychMetalAudioEngine.h PsychMetalMovie.h
+include PsychMetalDisplayLink.h PsychMetalCustomShader.h PsychMetalLiveTimeline.h PsychMetalKeyframes.h PsychMetalTimeline.h PsychMetalReadback.h PsychMetalEngine.h PsychMetalInternal.h PsychMetalKeyboardQueue.h PsychMetalShaders.h PsychMetalIOS.h PsychMetalAudio.h PsychMetalAudioHost.h PsychMetalAudioEngine.h PsychMetalMovie.h PsychMetalRecord.h PsychMetalRecordingClock.h PsychMetalOfflineAudio.h
 include python/README.md
 global-exclude *.so *.mex *.mexmaca64 *.o
 prune tests
@@ -20,3 +20,7 @@ include python/custom-shader-demo.metal
 include AUDIO.md
 
 include MOVIES.md
+
+include OFFSCREEN-EXPORT.md
+
+include WISHLIST-0.10.0.md

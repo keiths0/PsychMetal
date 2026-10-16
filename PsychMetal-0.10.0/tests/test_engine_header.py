@@ -19,7 +19,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 read = lambda name: (root / name).read_text()
 # The engine is one translation unit: PsychMetalEngine.mm and the platform parts it includes.
-header, engine, shared = read('PsychMetalEngine.h'), read('PsychMetalEngine.mm') + read('PsychMetalAudioEngine.h') + read('PsychMetalMovie.h'), read('PsychMetalShared.cpp')
+header, engine, shared = read('PsychMetalEngine.h'), read('PsychMetalEngine.mm') + read('PsychMetalAudioEngine.h') + read('PsychMetalMovie.h') + read('PsychMetalRecord.h'), read('PsychMetalShared.cpp')
 mex, python = read('PsychMetalMex.cpp'), read('PsychMetalPython.cpp')
 failures = []
 

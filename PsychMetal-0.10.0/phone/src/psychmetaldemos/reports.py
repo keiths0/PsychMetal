@@ -54,3 +54,18 @@ class Reports:
             path=directory/'timing-environment.json'
             path.write_text(json.dumps(_json_value(self.data['timingEnvironment']),allow_nan=False,indent=2)+'\n',encoding='utf-8');files.append(path)
         return files
+
+
+class MovieExport:
+    """Snapshot a completed recording for the system sheet's entire lifetime."""
+    def __init__(self, path):
+        self.path=Path(path)
+
+    def export(self, directory):
+        import shutil
+        if not self.path.is_file():
+            raise ValueError('Record a stimulus first. No completed movie is available.')
+        directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
+        destination=directory/self.path.name
+        shutil.copy2(self.path,destination)
+        return [destination]

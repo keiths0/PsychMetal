@@ -33,6 +33,43 @@ template<class T> ArrayView view(const std::vector<T> &d, ScalarType t, size_t h
 bool rejects(const ArrayView &v) { std::vector<__fp16> o; try { pm::internal::packImage(v, o); } catch (const pm::Error &) { return true; } return false; }
 int main() {
     std::vector<__fp16> out;
+    // Direct single storage: preserve values beyond half precision, return an
+    // already-packed buffer in place, and retain validation/clamping/strides.
+    std::vector<float> singles={.123456789f,.25f,.5f,1.f};
+    std::vector<float> singleScratch;pm::internal::ImageShape singleShape;
+    auto direct=view(singles,ScalarType::Float32,2,2,1,2,1,0);
+    assert(pm::internal::packSingles(direct,singleScratch,singleShape)==singles.data());
+    assert(singles[0]!=(float)(__fp16)singles[0]);
+    singles[0]=-1;
+    auto packed=(const float*)pm::internal::packSingles(direct,singleScratch,singleShape);
+    assert(packed!=singles.data()&&packed[0]==0);
+    // A clamped prefix must not hide an invalid later pixel when the direct
+    // path stops scanning early and hands validation to the packing path.
+    singles[3]=INFINITY;bool tailRejected=false;
+    try{pm::internal::packSingles(direct,singleScratch,singleShape);}catch(const pm::Error&){tailRejected=true;}
+    assert(tailRejected);singles[3]=1;
+    singles[0]=.123456789f;
+    auto reversedSingle=view(singles,ScalarType::Float32,2,2,1,-2,-1,0,3);
+    packed=(const float*)pm::internal::packSingles(reversedSingle,singleScratch,singleShape);
+    assert(packed[0]==1&&packed[3]==singles[0]);
+    singles[0]=NAN;bool nonfiniteSingle=false;
+    try{pm::internal::packSingles(direct,singleScratch,singleShape);}catch(const pm::Error&){nonfiniteSingle=true;}
+    assert(nonfiniteSingle);
+    singles[0]=.123456789f;
+    std::vector<unsigned char> unalignedSingle(1+singles.size()*4);
+    std::memcpy(unalignedSingle.data()+1,singles.data(),singles.size()*4);
+    direct.data=unalignedSingle.data()+1;
+    assert(pm::internal::packSingles(direct,singleScratch,singleShape)==direct.data);
+    auto colourSingle=view(singles,ScalarType::Float32,1,1,3,3,3,1);
+    packed=(const float*)pm::internal::packSingles(colourSingle,singleScratch,singleShape);
+    assert(packed[0]==singles[0]&&packed[3]==1);
+    auto nullImage=direct;nullImage.data=nullptr;bool nullRefused=false;
+    try{pm::internal::packSingles(nullImage,singleScratch,singleShape);}catch(const pm::Error&){nullRefused=true;}
+    assert(nullRefused);
+    std::vector<double> doubles={.123456789,1};
+    auto doublePartial=view(doubles,ScalarType::Float64,1,2,1,2,1,0);
+    packed=(const float*)pm::internal::packSingles(doublePartial,singleScratch,singleShape);
+    assert(packed[0]==(float)doubles[0]&&packed[1]==1);
     // Column-major, as MATLAB passes them.
     std::vector<double> gray = {0, .25, .5, .75, 1, 2};
     auto s = pm::internal::packImage(view(gray, ScalarType::Float64, 2, 3, 1, 1, 2, 0), out);

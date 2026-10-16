@@ -2,30 +2,32 @@
 
 Native Metal stimulus presentation for Apple silicon Macs with MATLAB, Octave and Python interfaces, and for iPhone/iPad with Python. Uses supported Screen-style argument formats; it is not a complete Psychtoolbox replacement. No OpenGL or Vulkan presentation backend is used.
 
-## Current version: 0.9.0
+## Current version: 0.10.0
 
-- [Installation, build instructions and demos](PsychMetal-0.9.0/README.md)
-- [Audio](PsychMetal-0.9.0/AUDIO.md)
-- [Changelog](PsychMetal-0.9.0/CHANGELOG.md)
-- [Validation and hardware limitations](PsychMetal-0.9.0/VALIDATION.md)
+- [Installation, build instructions and demos](PsychMetal-0.10.0/README.md)
+- [Movies, recording and playback](PsychMetal-0.10.0/MOVIES.md)
+- [Standalone Metal movie export](PsychMetal-0.10.0/OFFSCREEN-EXPORT.md)
+- [Audio](PsychMetal-0.10.0/AUDIO.md)
+- [Changelog](PsychMetal-0.10.0/CHANGELOG.md)
+- [Validation and hardware limitations](PsychMetal-0.10.0/VALIDATION.md)
 
-Version 0.9.0 adds audio on the Mac and iPhone/iPad, from MATLAB, Octave and
-Python: sounds that start and stop on the sample nearest a GetSecs time or a
-queued frame's presentation, amplitude modulation on the same clock, recording
-on exact samples and a voice key. Two new demos, also in the phone app: a live
-spectrogram with a recorder, and phase and frequency matching between flicker
-and a modulated tone. Audio times are those the system reports and have not yet
-been measured on hardware.
+Version 0.10.0 adds movie playback, stimulus recording with generated sound,
+virtual-clock recording and standalone movie export, shared across the Mac
+interfaces and phone engine. It also adds analytic arcs, bounded movie preload,
+all-intra conversion, reported A/V offsets, texture/startup improvements and
+audio-device recovery. Phone demos include movie playback, recording/replay,
+export/sharing and prominent Start controls.
 
-[Download PsychMetal 0.9.0](https://github.com/keiths0/PsychMetal/releases/tag/v0.9.0).
-Previous release: [PsychMetal 0.8.1](https://github.com/keiths0/PsychMetal/releases/tag/v0.8.1).
+[Download PsychMetal 0.10.0](https://github.com/keiths0/PsychMetal/releases/tag/v0.10.0).
+Previous release: [PsychMetal 0.9.0](https://github.com/keiths0/PsychMetal/releases/tag/v0.9.0).
 
 Mac MATLAB/Octave binaries, source and demos are included in the release ZIP.
-Python 3.14 ARM64 Mac and iOS device/simulator wheels are separate release assets.
-The supplied Octave binary uses Octave 11.3 libraries requiring macOS 26;
-MATLAB/Python target macOS 14+. Automated checks do not establish physical timing
-or complete cross-device GPU acceptance. GitHub publication and App Store
-submission are separate. Video is deferred to 0.10.0.
+A Python ARM64 Mac wheel, iOS device/simulator wheels and source archive are
+separate release assets. The supplied Octave binary uses Octave 11.3 libraries
+requiring macOS 26; MATLAB/Python target macOS 14+. Software checks and the
+user's functional phone checks do not establish physical timing or complete
+GPU/codec/device acceptance. See the validation record above. GitHub publication,
+PyPI publication and App Store submission are separate actions.
 
 ## Previous releases
 

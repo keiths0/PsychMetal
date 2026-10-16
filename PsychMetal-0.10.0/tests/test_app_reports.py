@@ -125,7 +125,7 @@ assert not any(e[1] in ('inventory_test','readback_test','display_test','kb_demo
 first=entries[0]
 app.starter(*first)(None)
 assert app.main_window.content is not app.page and not app.running
-assert app.main_window.content.children[-1].on_press
+assert app.main_window.content.children[2].children[0].on_press
 app.show_help()
 assert 'Getting started' in app.main_window.content.children[-1].loaded[1]
 app.show_document('privacy.html')
@@ -149,21 +149,36 @@ def walk(widget):
 page=app.main_window.content
 sliders=[x for x in walk(page) if 'tick_count' in x.__dict__]
 assert [(x.min,x.max,x.tick_count,x.value) for x in sliders]==[(0,5,6,1),(1,5,5,1)]
-numbered=[[c.args[0] for c in x.children if c.args] for x in walk(page)
-          if x.children and any(c.args for c in x.children) and all(str(c.args[0]).isdigit() for c in x.children if c.args)]
-assert numbered==[['0','1','2','3','4','5'],['1','2','3','4','5']]
+# Launch stays fixed; full-width settings precede notes in the scroll area.
+assert page.children[2].children[0].args[0]=='Start demo'
+assert page.children[2].style.direction=='column'
+assert not hasattr(page.children[2].children[0].style,'width')
+assert all(x in list(walk(page.children[-1].content.children[0])) for x in sliders)
+assert all(x.style.flex==1 for x in sliders)
+assert page.children[-1].content.children[1].args[0]=='How to use'
 sliders[0].value,sliders[1].value=3.0,4.9999
 sliders[0].on_change(sliders[0])
-assert any(getattr(x,'text',None)=='Noise speed (pixels per frame): 3' for x in walk(page))
+assert any(' '.join(getattr(x,'text','').split())=='Noise speed (pixels per frame): 3' for x in walk(page))
 started=[]
 original_start=app.start
 app.start=lambda *a: started.append(a)
-page.children[-1].on_press(None)
+page.children[2].children[0].on_press(None)
 app.start=original_start
 assert started and started[0][1]=='hidden_ring_demo' and started[0][3]==dict(speed=3,cell=5)
 assert set(CHOICES)<={e[0] for e in entries}
 app.back_to_demos()
-print('PASS: Hidden ring is one entry, with speed and cell size chosen by sliders numbered at each stop.')
+print('PASS: Hidden ring is one entry, with speed and cell size chosen below the full-width Start button with live value labels.')
+for entry in entries:
+    app.starter(*entry)(None)
+    teaching=app.main_window.content
+    launch=teaching.children[2].children[0]
+    assert launch.args[0]==('Create movie' if entry[1]=='export_demo' else 'Start demo')
+    assert launch.style.height>=60 and launch.style.background_color=='#146C66'
+    assert hasattr(teaching.children[-1],'content')
+    assert not hasattr(teaching.children[2],'content')
+app.back_to_demos()
+print('PASS: all demo pages show a prominent launch action before scrolling instructions.')
+
 # Status output belongs to the scrollable menu, never a footer below the screen.
 assert len(app.page.children)==1
 assert app.printed in app.page.children[0].content.children
@@ -216,8 +231,8 @@ def labels(widget):
     return [a for a in widget.args if isinstance(a, str)] + [
         text for child in widget.children for text in labels(child)]
 menu_labels = labels(app.page.children[0].content)
-assert '0.9.0' in menu_labels and not any('BETA' in t for t in menu_labels)
-assert '0.9.0 beta' not in help_html
+assert '0.10.0' in menu_labels and not any('BETA' in t for t in menu_labels)
+assert '0.10.0 beta' not in help_html
 assert f'<h1>PsychMetal {app_module.pm.version()}</h1>' in help_html
 assert f'Version {app_module.pm.version()}.' in help_html
 assert f'psychmetal-{app_module.pm.version()}.dist-info' in (documents / 'licenses.html').read_text()
@@ -237,6 +252,7 @@ app.diagnostic_switch.value=True;app.diagnostic_changed(app.diagnostic_switch)
 last_report=app.last_report
 long_error="cannot import name 'objc_id' <dependency> " + 'very_long_module_path_'*40 + ' END-OF-ERROR'
 class FailedShare:
+    active=False
     def present(self,*args): raise ImportError(long_error)
 app.running=False;app.share_sheet=FailedShare()
 app.share_reports()
@@ -261,7 +277,7 @@ print('PASS: share errors wrap and scroll completely, preserve reports, allow re
 app.share_sheet=SimpleNamespace(active=False)
 app_module.pm.start=lambda demo,done:started.append((demo,done))
 app.starter(*first)(None)
-app.main_window.content.children[-1].on_press(None)
+app.main_window.content.children[2].children[0].on_press(None)
 assert app.running and app.main_window.content is app.page
 started[-1][1](None,None)
 fn,*args=calls.pop();fn(*args)
@@ -278,3 +294,106 @@ reopened.diagnostic_switch.value=True;reopened.diagnostic_changed(reopened.diagn
 assert reopened.diagnostic_host.children==[reopened.diagnostic_section]
 assert all(b.enabled for b in (reopened.report_button,reopened.output_button,reopened.environment_button,reopened.share_button))
 print('PASS: optional tasks and every report tool detach with diagnostics off, including saved reports on launch; toggling restores them without duplicates or data loss.')
+
+app.diagnostic_switch.value=False; app.diagnostic_changed(app.diagnostic_switch)
+app.run_diagnostics=False
+app.streams=(sys.stdout,sys.stderr); app.kept=(Kept(io.StringIO()),Kept(io.StringIO()))
+app.finished('Sound recorder',RuntimeError('microphone test failure'))
+fn,*args=calls.pop(); fn(*args)
+assert app.main_window.content is not app.page
+assert 'microphone test failure' in app.main_window.content.children[-1].loaded[1]
+app.back_to_demos()
+assert app.main_window.content is app.page and not app.running
+print('PASS: failed demos open readable error output with diagnostic mode off.')
+
+import tempfile
+from pathlib import Path
+import movie_demo, record_demo, export_demo
+with tempfile.TemporaryDirectory() as directory:
+    app.paths=SimpleNamespace(data=Path(directory))
+    app_module.pm.start=lambda demo,done: started.append((demo,done))
+    for module, function in ((movie_demo,'movie_demo'),(record_demo,'record_demo'),(export_demo,'export_demo')):
+        app.start('Video',module.__name__,function,{})
+        with patch.object(module,function) as invoke:
+            started[-1][0]()
+            options=invoke.call_args.kwargs
+            if module is movie_demo:
+                assert options['path'].is_file() and options['path'].suffix=='.mp4'
+            else:
+                assert options['path']==Path(directory)/'movies/stimulus.mp4'
+                assert options['path'].parent.is_dir()
+                if module is record_demo:assert options['codec']=='h264' and options['scale']==0.5
+                else:assert options==dict(path=Path(directory)/'movies/stimulus.mp4',seconds=3.0)
+        started[-1][1](None,None)
+        fn,*args=calls.pop(); fn(*args)
+    app_module.pm.start=original_start
+print('PASS: phone movies use a bundled sample and writable app-local recording path.')
+
+with tempfile.TemporaryDirectory() as directory:
+    app.movie_path=Path(directory)/'stimulus.mp4'
+    app.movie_path.write_bytes(b'completed recording')
+    app.diagnostic_switch.value=False
+    app.diagnostic_changed(app.diagnostic_switch)
+    assert app.movie_share_button.enabled and not app.diagnostic_host.children
+    class MovieSheet:
+        active=False
+        def present(self, window, exporter, done):
+            self.active=True
+            self.files=exporter.export(Path(directory)/'shared')
+            self.done=done
+    app.share_sheet=MovieSheet()
+    app.share_movie()
+    assert not app.movie_share_button.enabled and app.share_sheet.active
+    app.share_sheet.active=False;app.share_sheet.done(False,None)
+    assert app.movie_share_button.enabled and 'cancelled' in app.printed.text
+    assert app.movie_path.is_file() and not app.diagnostic_host.children
+    app.running=True;app.diagnostic_changed(app.diagnostic_switch)
+    assert not app.movie_share_button.enabled
+    app.running=False;app.share_sheet=None
+print('PASS: movie export works outside diagnostics, cancellation restores sharing, and running demos disable export.')
+# Export has a visible success page even with Diagnostic mode off, and verifies
+# the file before reporting success. Completion still dispatches UI to main.
+with tempfile.TemporaryDirectory() as directory:
+    app.movie_path=Path(directory)/'stimulus.mp4'
+    app.movie_path.write_bytes(b'completed movie')
+    result=dict(exportedMovie=True,path=str(app.movie_path),duration=3,frames=180,width=640,height=480)
+    app.run_diagnostics=False;app.diagnostic_switch.value=False
+    app.streams=(sys.stdout,sys.stderr);app.kept=(Kept(io.StringIO()),Kept(io.StringIO()))
+    app.back_to_demos();app.running=True
+    app.finished('Export a stimulus',None,result)
+    assert app.main_window.content is app.page
+    fn,*args=calls.pop();fn(*args)
+    assert not app.running and app.main_window.content is not app.page
+    content=app.main_window.content.children[0].content
+    assert content.children[0].args[0]=='Movie ready'
+    assert '180 frames' in content.children[1].args[0]
+    assert app.export_share_button.enabled and not app.diagnostic_host.children
+    assert 'Movie saved' in app.printed.text
+    # Preview must use the exported file, not the bundled numbered sample.
+    app_module.pm.start=lambda demo,done: started.append((demo,done))
+    content.children[3].on_press(None)
+    with patch.object(movie_demo,'movie_demo') as invoke:
+        started[-1][0]()
+        assert invoke.call_args.kwargs==dict(path=app.movie_path,sound='off')
+    started[-1][1](None,None);fn,*args=calls.pop();fn(*args)
+    app_module.pm.start=original_start
+    # Both share buttons track an active sheet and recover after cancellation.
+    app.show_movie_saved(result)
+    app.share_sheet=MovieSheet()
+    app.export_share_button.on_press(None)
+    assert app.share_sheet.active and not app.export_share_button.enabled and not app.movie_share_button.enabled
+    app.share_sheet.active=False;app.share_sheet.done(False,None)
+    assert app.export_share_button.enabled and app.movie_share_button.enabled
+    assert 'cancelled' in app.export_status.text
+    app.share_sheet=None
+    # Missing, empty and wrong-path files become visible errors, not success.
+    for variant in ('missing','empty','wrong'):
+        if app.movie_path.exists():app.movie_path.unlink()
+        if variant=='empty':app.movie_path.touch()
+        bad=dict(result)
+        if variant=='wrong':bad['path']=str(Path(directory)/'other.mp4')
+        app.finished('Export a stimulus',None,bad)
+        fn,*args=calls.pop();fn(*args)
+        assert 'readable saved movie' in app.last_output and app.main_window.content is not app.page
+        assert app.main_window.content.children[1].loaded[1].find('readable saved movie')>=0
+print('PASS: export success is visible without diagnostics, preview uses the saved clip, sharing recovers after cancel, and missing/empty/wrong files show errors.')

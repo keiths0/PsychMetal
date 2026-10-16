@@ -41,3 +41,23 @@ OSStatus CMBlockBufferCopyDataBytes(CMBlockBufferRef, size_t offset, size_t leng
 enum { kCMBlockBufferNoErr = 0 };
 FourCharCode CMFormatDescriptionGetMediaSubType(CMFormatDescriptionRef);
 const AudioStreamBasicDescription *CMAudioFormatDescriptionGetStreamBasicDescription(CMAudioFormatDescriptionRef);
+typedef uint32_t CMBlockBufferFlags;
+enum { kCMBlockBufferAssureMemoryNowFlag = 1 };
+struct CMBlockBufferCustomBlockSource;
+struct AudioStreamPacketDescription;
+struct AudioChannelLayout;
+OSStatus CMBlockBufferCreateWithMemoryBlock(CFAllocatorRef structureAllocator, void *memoryBlock, size_t blockLength,
+                                            CFAllocatorRef blockAllocator, const CMBlockBufferCustomBlockSource *customBlockSource,
+                                            size_t offsetToData, size_t dataLength, CMBlockBufferFlags flags,
+                                            CMBlockBufferRef *blockBufferOut);
+OSStatus CMBlockBufferReplaceDataBytes(const void *sourceBytes, CMBlockBufferRef destinationBuffer,
+                                       size_t offsetIntoDestination, size_t dataLength);
+OSStatus CMAudioSampleBufferCreateReadyWithPacketDescriptions(CFAllocatorRef, CMBlockBufferRef dataBuffer,
+    CMFormatDescriptionRef formatDescription, CMItemCount numSamples, CMTime presentationTimeStamp,
+    const AudioStreamPacketDescription *packetDescriptions, CMSampleBufferRef *sampleBufferOut);
+OSStatus CMAudioFormatDescriptionCreate(CFAllocatorRef, const AudioStreamBasicDescription *asbd, size_t layoutSize,
+    const AudioChannelLayout *layout, size_t magicCookieSize, const void *magicCookie, CFDictionaryRef extensions,
+    CMAudioFormatDescriptionRef *formatDescriptionOut);
+
+CFArrayRef CMSampleBufferGetSampleAttachmentsArray(CMSampleBufferRef, unsigned char);
+extern const CFStringRef kCMSampleAttachmentKey_NotSync;

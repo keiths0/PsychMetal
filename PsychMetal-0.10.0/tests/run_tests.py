@@ -3,10 +3,15 @@
 Mac or a GPU run where those exist and say so where they do not."""
 from pathlib import Path
 import os
+import argparse
 import shutil
 import subprocess
 import sys
 import tempfile
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--skip-media-fixtures', action='store_true',
+                    help='explicitly omit AVFoundation test-movie encoding/decoding; no movie validation is claimed')
+args = parser.parse_args()
 root=Path(__file__).resolve().parents[1]
 # UndefinedBehaviorSanitizer otherwise logs some faults and returns success.
 # A regression suite must fail, not quietly accept a misaligned access.
@@ -33,11 +38,14 @@ if not octave: print('Octave not found: MATLAB wrapper tests SKIPPED.')
 elif 'test_headless' not in tests: print('No PsychMetalCore.mex for this machine (make octave on a Mac): real-MEX headless test SKIPPED.')
 # Engine internals, boundary and parity, both front ends against the scripted
 # engine, and the real Python extension headless.
-for test in ['test_resource_lifetime.py','test_display_modes.py','test_store_packaging.py','test_readback_unpack.py','test_stimulus_native.py','test_masked_image_native.py','test_shader_native.py','test_masked_image_demo.py','test_play_timeline.py','test_engine_header.py','test_typecheck.py','test_mouse_dispatch.py','test_native_dispatch.py','test_noise_layout.py','test_mask_cache.py','test_fingers.py',
-             'test_timing_target.py','test_wait_margin.py','test_flip_status.py','test_queue_results.py','test_render_failure.py','test_secure_input.py','test_startup_ready.py','test_frontends.py',
-             'test_python_headless.py','test_phone_reports.py']:
+for test in ['test_resource_lifetime.py','test_texture_upload.py','test_display_modes.py','test_store_packaging.py','test_readback_unpack.py','test_stimulus_native.py','test_masked_image_native.py','test_shader_native.py','test_masked_image_demo.py','test_play_timeline.py','test_engine_header.py','test_typecheck.py','test_mouse_dispatch.py','test_native_dispatch.py','test_noise_layout.py','test_mask_cache.py','test_fingers.py',
+             'test_timing_target.py','test_wait_margin.py','test_flip_status.py','test_queue_results.py','test_virtual_queue.py','test_export_render.py','test_export_lifecycle.py','test_render_failure.py','test_secure_input.py','test_startup_ready.py','test_frontends.py',
+             'test_python_headless.py','test_phone_reports.py','test_recording_writer.py','test_record_demo_replay.py','test_recording_interleave.py','test_recording_lifetime.py','test_audio_recovery.py','test_audio_mac_recovery.py','test_recording_file.py','test_movie_prefetch.py','test_movie_presentations.py','test_movie_audio_bounds.py','test_movie_metadata.py','test_offline_recording_audio.py']:
     run([sys.executable,root/'tests'/test])
 with tempfile.TemporaryDirectory(prefix='psychmetal-tests-') as temp:
+    for sanitizer in ('address,undefined','thread'):
+        binary=Path(temp)/('recording-clock-'+sanitizer.replace(',','-'))
+        run(['clang++','-std=c++17','-pthread','-iquote',root,'-fsanitize='+sanitizer,root/'tests/test_recording_clock.cpp','-o',binary]);run([binary])
     binary=Path(temp)/'live-timeline'
     run(['clang++','-std=c++17','-pthread','-fsanitize=address,undefined',root/'tests/test_live_timeline.cpp',root/'PsychMetalShared.cpp','-o',binary]);run([binary])
     binary=Path(temp)/'timeline'
@@ -72,12 +80,15 @@ with tempfile.TemporaryDirectory(prefix='psychmetal-tests-') as temp:
         binary=Path(temp)/'make-test-movie'
         run(['clang++','-std=c++17','-fobjc-arc','-mmacosx-version-min=14.0','-Wall','-Wextra','-framework','Foundation',
              '-framework','AVFoundation','-framework','CoreMedia','-framework','CoreVideo','-framework','CoreGraphics',root/'tests/make_test_movie.mm','-o',binary])
-        movies=root/'tests'/'movies'
-        movies.mkdir(exist_ok=True)
-        for name,args in [('frames_prores4444.mov',['prores4444']),('frames_h264.mp4',['h264']),('frames_hevc.mov',['hevc']),
-                          ('frames_24fps.mov',['prores422','160','96','24','48']),
-                          ('frames_portrait.mov',['hevc','160','96','30','30','0','90'])]:
-            run([binary,movies/name]+args)
+        if args.skip_media_fixtures:
+            print('Movie encoding/decoding fixtures SKIPPED by explicit --skip-media-fixtures; media hardware validation remains pending.', flush=True)
+        else:
+            movies=root/'tests'/'movies'
+            movies.mkdir(exist_ok=True)
+            for name,args in [('frames_prores4444.mov',['prores4444']),('frames_h264.mp4',['h264']),('frames_hevc.mov',['hevc']),
+                              ('frames_24fps.mov',['prores422','160','96','24','48']),
+                              ('frames_portrait.mov',['hevc','160','96','30','30','0','90'])]:
+                run([binary,movies/name]+args)
         binary=Path(temp)/'custom-shader-metal'
         run(['clang++','-std=c++17','-fobjc-arc','-framework','Foundation','-framework','Metal',root/'tests/test_custom_shader_metal.mm','-o',binary]);run([binary],skip=True)
     else:

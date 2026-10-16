@@ -510,4 +510,143 @@ int main() {
         for (int k = 1; k <= n; k++) assert(seen[k] == 2 && gone[k] == 1);
     }
     puts("PASS: command, event and retirement rings between a host thread and an audio thread lose nothing.");
+    {   // The tap: what is played, as played, with each block's time; mono copied to both; a
+        // buffer longer than a block split with the right times; a full tap counts, never waits.
+        Device d(1);
+        Tap tap;
+        d.mixer.tap.attach(&tap);
+        d.play(1, click, d.at(100));
+        d.render(64);
+        d.render(64);
+        d.render(TapBlock::kFrames + 36);
+        TapBlock b;
+        std::vector<float> left;
+        uint64_t sample = 0;
+        while (tap.blocks.pop(b)) {
+            assert(near(b.onset, d.at(sample)) && b.rate == kRate);
+            for (uint32_t i = 0; i < b.frames; i++) { left.push_back(b.samples[2 * i]); assert(b.samples[2 * i] == b.samples[2 * i + 1]); }
+            sample += b.frames;
+        }
+        assert(left == d.recording[0] && left[100] == 1.f && tap.lostFrames.load() == 0);
+        for (int i = 0; i < 300; i++) d.render(64);
+        assert(tap.lostFrames.load() == (300 - 256) * 64);
+        d.mixer.tap.detach(&tap);
+        d.render(64);
+        size_t kept = 0;
+        while (tap.blocks.pop(b)) kept++;
+        assert(kept == 256);
+    }
+    puts("PASS: the movie tap copies what is played, with each block's time; a full tap counts what it loses and never waits.");
+    {   // Detach must wait for the callback that holds the old tap, even if
+        // that callback is suspended much longer than a fixed sleep interval.
+        TapConnection connection;
+        auto tap = std::make_unique<Tap>();
+        connection.attach(tap.get());
+        std::atomic<bool> entered{false}, release{false}, detaching{false}, detached{false};
+        std::thread callback([&] {
+            connection.withTap([&](Tap &t) {
+                entered.store(true);
+                while (!release.load()) std::this_thread::yield();
+                t.lostFrames.fetch_add(7);
+            });
+        });
+        while (!entered.load()) std::this_thread::yield();
+        std::thread host([&] { detaching.store(true); connection.detach(tap.get()); detached.store(true); });
+        while (!detaching.load()) std::this_thread::yield();
+        std::this_thread::sleep_for(std::chrono::milliseconds(70));
+        assert(!detached.load());
+        release.store(true);
+        callback.join(); host.join();
+        assert(detached.load() && tap->lostFrames.load() == 7);
+        tap.reset();
+        bool called = false;
+        connection.withTap([&](Tap &) { called = true; });
+        assert(!called);
+    }
+    {   // Real render callbacks race repeated attach/detach and immediate free.
+        Mixer mixer;
+        std::atomic<bool> stop{false};
+        std::thread callback([&] {
+            float samples[64]; float *out[] = {samples};
+            while (!stop.load()) mixer.render(out, 1, 64, 100, kRate);
+        });
+        for (int i = 0; i < 128; ++i) {
+            auto tap = std::make_unique<Tap>();
+            mixer.tap.attach(tap.get());
+            std::this_thread::yield();
+            mixer.tap.detach(tap.get());
+        }
+        stop.store(true); callback.join();
+    }
+    puts("PASS: tap detach waits for a suspended callback; repeated detach/free is safe during rendering.");
+
+    {
+        TapBacklog waiting;
+        TapBlock block{};
+        block.rate = kRate; block.frames = 64;
+        for (size_t i = 0; i < 10000; ++i) {
+            block.onset = (double)(64 * i) / kRate;
+            assert(waiting.push(block, NAN) == 0);
+            assert(waiting.size() <= TapBacklog::kBlocks);
+        }
+        assert(waiting.size() == TapBacklog::kBlocks);
+        const double oldest = (double)(64 * (10000 - TapBacklog::kBlocks)) / kRate;
+        assert(near(waiting.front().onset, oldest));
+        assert(waiting.push(block, oldest + 32 / kRate) == 32);
+        assert(waiting.push(block, 0) == 64);
+        assert(waiting.push(block, block.onset + 1) == 0);
+    }
+    puts("PASS: sound waiting for a first video frame stays bounded and counts only discarded movie samples.");
+
+    {
+        Mixer m;
+        Sound tone; tone.channels = 1; tone.frames = 1; tone.samples = {.25f};
+        Command old; old.voice = 1; old.sound = &tone; old.repeats = 0;
+        assert(m.commands.push(old));
+        float samples[64]; float *out[] = {samples};
+        m.render(out, 1, 64, 100, kRate);
+        m.interrupt(100.001);
+        Command queued = old; queued.voice = 2; queued.when = 110;
+        assert(m.commands.push(queued)); // queued before the interruption
+        Command fresh = old; fresh.voice = 3; fresh.generation = m.interruptionGeneration.load();
+        assert(m.commands.push(fresh)); // a new stimulus after recovery
+        m.resumed();
+        m.render(out, 1, 64, 105, kRate); // restart after a long, explicitly reported interruption
+        for (float value : samples) assert(value == .25f);
+        Event e; int interrupted = 0, startedFresh = 0;
+        while (m.events.pop(e)) {
+            if (e.status == Event::Interrupted) { assert(e.voice == 1 || e.voice == 2); assert(e.time == 100.001); ++interrupted; }
+            if (e.kind == Event::Start && e.voice == 3) ++startedFresh;
+        }
+        assert(interrupted == 2 && startedFresh == 1);
+        m.render(out, 1, 64, 106, kRate); // unreported interruption: callback gap
+        for (float value : samples) assert(value == 0);
+        assert(m.events.pop(e) && e.status == Event::Interrupted && e.voice == 3);
+        assert(!m.events.pop(e));
+    }
+    puts("PASS: interruptions retire playing/queued old voices, preserve post-recovery voices and cancel stale sound across callback gaps.");
+
+    {
+        auto ownedRecorder = std::make_unique<Recorder>();
+        Recorder &r = *ownedRecorder; r.allocate(1, 1024);
+        float samples[64]; std::fill_n(samples, 64, .25f); const float *in[] = {samples};
+        InputCommand old; old.kind = InputCommand::Record; old.id = 1;
+        assert(r.commands.push(old)); r.capture(in,1,64,100,kRate);
+        r.interrupt(100.001);
+        InputCommand stale = old; stale.id = 2;
+        assert(r.commands.push(stale));
+        InputCommand fresh = old; fresh.id = 3; fresh.generation = r.interruptionGeneration.load();
+        assert(r.commands.push(fresh)); r.capture(in,1,64,100.002,kRate);
+        InputEvent e; int cancelled=0, started=0;
+        while (r.events.pop(e)) {
+            if (e.status == InputEvent::Interrupted) {
+                assert(e.id == 1 || e.id == 2); assert(e.time == 100.001);
+                assert(e.frames == (e.id == 1 ? 64 : 0)); ++cancelled;
+            }
+            if (e.kind == InputEvent::RecordStart && e.id == 3) ++started;
+        }
+        assert(cancelled == 2 && started == 1 && r.recorded.load() == 64);
+    }
+    puts("PASS: interruptions end the old recording with its saved sample count; stale input commands cannot restart it.");
+
 }

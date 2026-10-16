@@ -18,3 +18,7 @@ __pycache__/
 
 # Test movies, made by make test (tests/make_test_movie.mm)
 tests/movies/
+psychmetal_recording.mov
+
+# Local alternate build recipe; the maintained recipe is Makefile.
+/Makefile.new

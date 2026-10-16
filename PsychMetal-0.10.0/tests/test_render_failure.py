@@ -68,7 +68,15 @@ with tempfile.TemporaryDirectory() as d:
 commits = len(re.findall(r'\[cb commit\];', s))
 watched = len(re.findall(r'watchRender\(cb, \w+\);\s*\[cb commit\];', s))
 attached = len(re.findall(r'attachHandlers\(cb, ', s))
-assert watched == 3 and attached == 2 and commits + len(re.findall(r'commitPresentation\(cb,', s)) == watched + attached + 1, (commits, watched, attached)
+# Standalone export also attaches a semaphore handler between watchRender and
+# commit, then checks completion status synchronously (test_export_render.py).
+export = s[s.index('static uint64_t renderExportFrame()'):s.index('std::vector<pm::StartupRecord> pm::startupHistory()')]
+assert 'watchRender(cb,token);' in export and '[cb commit];' in export
+assert export.index('watchRender(cb,token);') < export.index('[cb commit];')
+upload=s[s.index('static void writeTexture('):s.index('static void uploadTexture(')]
+assert upload.count('[cb commit];')==1 and 'asynchronousGpuFailure=true' in upload
+assert 'cb.status!=MTLCommandBufferStatusCompleted' in upload and 'dispatch_semaphore_wait' in upload
+assert watched == 3 and attached == 2 and commits + len(re.findall(r'commitPresentation\(cb,', s)) == watched + attached + 3, (commits, watched, attached)
 # The presenter acts on storeState before it takes a frame from the queue: it waits
 # while the store is being rendered and abandons the frame if that failed. The
 # display's report on a frame never clears a GPU error.

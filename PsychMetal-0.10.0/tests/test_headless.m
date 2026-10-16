@@ -1,6 +1,6 @@
 function test_headless(root)
 addpath(root);clear PsychMetal PsychMetalCore
-assert(strcmp(PsychMetalCore('Version'),'0.9.0'));
+assert(strcmp(PsychMetalCore('Version'),'0.10.0'));
 reject(@() PsychMetalCore('CancelTimeline'));reject(@() PsychMetalCore('PlayTimeline',2,zeros(0,6))+0);
 reject(@() coreFlip());reject(@() coreStartup());
 reject(@() PsychMetalCore('BlendMode',1));reject(@() PsychMetalCore('Gamma',.5,.5,.5));reject(@() PsychMetalCore('GammaTable',zeros(4,3)));

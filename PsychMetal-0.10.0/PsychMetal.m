@@ -1,6 +1,6 @@
 function varargout = PsychMetal(command, varargin)
 % PsychMetal  Native Metal stimulus presentation on macOS. No OpenGL.
-% Version 0.9.0. SPDX-License-Identifier: MIT.
+% Version 0.10.0. SPDX-License-Identifier: MIT.
 %
 % Checks are written "if ~(cond), error(...); end", and copies "x(:, ones(1, n))"
 % or "x + zeros(1, n)": in Octave assert and repmat are interpreted functions
@@ -132,12 +132,14 @@ switch lower(command)
 
  case 'openwindow'
   if ~(isempty(S)), error('PsychMetal is already open. Close the existing window first.'); end;
-  refreshHz=[]; readback=false; bitDepth=8; presentation='auto';
+  refreshHz=[]; readback=false; bitDepth=8; presentation='auto'; exportSize=[]; captureDisplay=true;
   if numel(varargin)==1 && isstruct(varargin{1}) && isscalar(varargin{1})
-   options=varargin{1}; allowed={'screen','backgroundColor','drawableCount','refreshHz','readback','bitDepth','presentation'};
+   options=varargin{1}; allowed={'screen','backgroundColor','drawableCount','refreshHz','readback','bitDepth','presentation','exportSize','captureDisplay'};
    if ~(all(ismember(fieldnames(options),allowed))), error('Unknown OpenWindow option.'); end;
    varargin=cell(1,3);
    for j=1:3, if isfield(options,allowed{j}), varargin{j}=options.(allowed{j}); end; end
+   if isfield(options,'captureDisplay'), captureDisplay=logicalFlag(options.captureDisplay,'captureDisplay'); end
+   if isfield(options,'exportSize'), exportSize=options.exportSize; end
    if isfield(options,'presentation'), presentation=options.presentation; end
    if ~(ischar(presentation) && any(strcmp(presentation,{'auto','direct','displaylink'}))), error(...
        'presentation must be auto, direct or displaylink.'); end;
@@ -153,6 +155,15 @@ switch lower(command)
         'bitDepth must be 8 or 10.'); end;
     bitDepth=double(bitDepth);
    end
+  end
+  if ~isempty(exportSize)
+   if ~isempty(varargin) && ~isempty(varargin{1}),error('Export uses no screen number.');end
+   if ~(isnumeric(exportSize) && isreal(exportSize) && numel(exportSize)==2 && all(isfinite(exportSize(:))) && ...
+       all(exportSize(:)==floor(exportSize(:))) && all(exportSize(:)>=2) && all(exportSize(:)<=8192) && prod(double(exportSize))<=16777216)
+    error('exportSize must be [width height], 2..8192 and at most 16777216 pixels.'); end;
+   exportSize=double(exportSize(:)');
+   if bitDepth~=8 || strcmp(presentation,'displaylink'), error('Export uses eight-bit colour and no display link.'); end;
+   presentation='offscreen';if isempty(refreshHz),refreshHz=60;end
   end
   if ~isempty(refreshHz)
    if ~(isnumeric(refreshHz) && isreal(refreshHz) && isscalar(refreshHz) && isfinite(refreshHz) && refreshHz>=20 && refreshHz<=1000), error('refreshHz must be 20..1000.'); end;
@@ -183,12 +194,12 @@ switch lower(command)
   end
   try
    abi=PsychMetalCore('Version');
-   if ~(strcmp(abi,'0.9.0')), error('PsychMetal wrapper/core version mismatch: expected 0.9.0, found %s.', abi); end;
+   if ~(strcmp(abi,'0.10.0')), error('PsychMetal wrapper/core version mismatch: expected 0.10.0, found %s.', abi); end;
    if strcmp(presentation,'auto')
     if PsychMetalCore('DefaultPresentation'), presentation='displaylink'; else, presentation='direct'; end
    end
    linked=strcmp(presentation,'displaylink');
-   PsychMetalCore('PrepareApp');
+   if isempty(exportSize), PsychMetalCore('PrepareApp'); end
    openArgs={screen,drawableCount};
    % Trailing arguments are sent only as far as the last one that is not its
    % default. The core takes [] for "no refresh override".
@@ -197,13 +208,18 @@ switch lower(command)
    if readback || deep || linked, openArgs{end+1}=double(readback); end
    if deep || linked, openArgs{end+1}=bitDepth; end
    if linked, openArgs{end+1}=1; end
-   [width,height,ifi,pointW,pointH,nativeWindowToken]=PsychMetalCore('Open',openArgs{:});
+   if ~captureDisplay, openArgs={screen,drawableCount,refreshHz,double(readback),bitDepth,double(linked),0}; end
+   if isempty(exportSize)
+    [width,height,ifi,pointW,pointH,nativeWindowToken]=PsychMetalCore('Open',openArgs{:});
+   else
+    [width,height,ifi,pointW,pointH,nativeWindowToken]=PsychMetalCore('OpenExport',exportSize(1),exportSize(2),refreshHz,double(readback));
+   end
    displayRect = [0 0 width height];
    physicalRect = displayRect;
    logicalRect = [0 0 pointW pointH];
    PsychMetalCore('SetBackgroundColor', bgColor(1), bgColor(2), bgColor(3), bgColor(4));
    startupBegan=tic;
-   startup=PsychMetalCore('ConfirmStartup');
+   if isempty(exportSize),startup=PsychMetalCore('ConfirmStartup');else,startup=zeros(0,6);end
    startupSeconds=toc(startupBegan);
    fprintf('PsychMetal: %dx%d at %.3f Hz. %s Metal presentation, no OpenGL.\n', ...
        width, height, 1/ifi, presentation);
@@ -216,7 +232,7 @@ switch lower(command)
     fprintf(['PsychMetal: readback is on. Every frame is copied for GetImage; ' ...
         'do not take timing from this session.\n']);
    end
-   link=PsychMetalCore('LinkInfo');
+   if isempty(exportSize),link=PsychMetalCore('LinkInfo');else,link=zeros(1,6);end
    if link(5)==1
     fprintf(['PsychMetal: this picture needs %.1f Gbit/s and the display link carries %.1f, so the link is\n' ...
         'PsychMetal: compressed (DSC). Fine detail that changes can alter static detail near it. See README.\n'], ...
@@ -561,8 +577,23 @@ switch lower(command)
       'OpenMovie takes the window handle and a path.'); end;
   if ~(ischar(varargin{2}) || (isstring(varargin{2}) && isscalar(varargin{2}))), error('The movie path must be text.'); end;
   [handle,info]=PsychMetalCore('OpenMovie',char(varargin{2}));
-  S.movies(end+1)=struct('handle',handle,'info',info,'sounds',zeros(0,4));
+  S.movies(end+1)=struct('handle',handle,'info',info,'sounds',zeros(0,6));
   varargout={handle,info};
+
+ case 'transcodemovie'
+  if numel(varargin)<2 || numel(varargin)>3, error('TranscodeMovie takes source, destination and codec.'); end
+  codec='h264'; if numel(varargin)>2, codec=varargin{3}; end
+  if ~all(cellfun(@(v) ischar(v)||(isstring(v)&&isscalar(v)),{varargin{1},varargin{2},codec})), error('Paths and codec must be text.'); end
+  varargout={PsychMetalCore('TranscodeMovie',char(varargin{1}),char(varargin{2}),char(codec))};
+
+ case 'preparemovie'
+  if numel(varargin)<1 || numel(varargin)>3, error('PrepareMovie takes movie, frames and maxBytes.'); end
+  movieIndex(S,varargin{1}); frames=8; bytes=256*1024*1024;
+  if numel(varargin)>1, frames=varargin{2}; end
+  if numel(varargin)>2, bytes=varargin{3}; end
+  if ~(isnumeric(frames)&&isreal(frames)&&isscalar(frames)&&isfinite(frames)&&frames==fix(frames)&&frames>=0&&frames<=256), error('frames must be a whole number 0..256.'); end
+  if ~(isnumeric(bytes)&&isreal(bytes)&&isscalar(bytes)&&isfinite(bytes)&&bytes==fix(bytes)&&bytes>=16&&bytes<=2147483648), error('maxBytes must be a whole number 16..2147483648.'); end
+  varargout={PsychMetalCore('PrepareMovie',double(varargin{1}),double(frames),double(bytes))};
 
  case 'movieframetimes'
   if ~(numel(varargin)==1), error('MovieFrameTimes takes a movie handle.'); end;
@@ -590,6 +621,15 @@ switch lower(command)
    tint(4)=tint(4)*double(alpha)/S.colorRange;
   end
   PsychMetalCore('DrawMovieFrame',double(a{2}),double(index)-1,src,dst,double(angle),min(max(tint,0),1),double(filter));
+
+ case 'moviesound'
+  % samples = PsychMetal('MovieSound', movie[, rate]): frames x channels, from the first frame's time.
+  if ~(numel(varargin)==1 || numel(varargin)==2), error('MovieSound takes a movie and an optional rate.'); end;
+  m=S.movies(movieIndex(S,varargin{1}));
+  if ~(m.info.soundChannels>0), error('The movie has no sound.'); end;
+  rate=m.info.soundRate;if numel(varargin)==2 && ~isempty(varargin{2}),rate=varargin{2};end
+  if ~(isnumeric(rate) && isscalar(rate) && rate>=8000 && rate<=384000), error('rate must be 8000 to 384000 Hz.'); end;
+  varargout={PsychMetalCore('MovieSound',double(varargin{1}),double(rate),1,0)};
 
  case 'refreshesperframe'
   if ~(numel(varargin)==2 && isnumeric(varargin{1}) && isscalar(varargin{1}) && varargin{1}>0 && ...
@@ -636,12 +676,24 @@ switch lower(command)
         'played. sound ''resample'' or ''stretch'' plays it with them.'],rate,info.frameRate);
    else
     mode=o.sound;s=speed;if strcmp(mode,'auto'),s=1;end
-    key=[st.info.rate round(s*1e9)/1e9 double(strcmp(mode,'stretch'))];
-    hit=[];if ~isempty(m.sounds),hit=find(all(m.sounds(:,1:3)==key(ones(size(m.sounds,1),1),:),2),1);end
+    key=[st.info.rate round(s*1e9)/1e9 double(strcmp(mode,'stretch')) o.first o.count];
+    hit=[];if ~isempty(m.sounds),hit=find(all(m.sounds(:,[1:3 5:6])==key(ones(size(m.sounds,1),1),:),2),1);end
     if isempty(hit)
+     for old=1:size(m.sounds,1), PsychMetalCore('CloseSound',m.sounds(old,4)); end
+     S.movies(k).sounds=zeros(0,6);
      samples=PsychMetalCore('MovieSound',double(varargin{2}),key(1),key(2),key(3));
-     sound=PsychMetalCore('MakeSound',samples,0);
-     S.movies(k).sounds(end+1,:)=[key sound];
+     if o.first>1 || o.count~=total
+      times=PsychMetalCore('MovieFrameTimes',double(varargin{2}));
+      firstSample=floor(max(0,(times(o.first)-times(1))*key(1)/s)+.5)+1;
+      length=floor(o.count/rate*key(1)+.5);
+      samples=samples(firstSample:min(size(samples,1),firstSample+length-1),:);
+     end
+     if ~isempty(samples)
+      sound=PsychMetalCore('MakeSound',samples,0);
+      S.movies(k).sounds(end+1,:)=[key(1:3) sound key(4:5)];
+     else
+      mode='off';
+     end
     else
      sound=m.sounds(hit,4);
     end
@@ -653,6 +705,32 @@ switch lower(command)
   if result.submitted>0, S.flipCount=S.flipCount+result.submitted; end
   result.refreshes=o.refreshes;result.rate=rate;result.sound=mode;
   varargout={result};
+
+ case 'startmovierecording'
+  % PsychMetal('StartMovieRecording', w, path[, struct('codec', 'prores4444', 'scale', 1, 'sound', true)])
+  if ~(~isempty(S) && (numel(varargin)==2 || numel(varargin)==3) && isscalar(varargin{1}) && varargin{1}==S.buffer), error(...
+      'StartMovieRecording takes w, a path and an optional options struct.'); end;
+  if ~(ischar(varargin{2}) || (isstring(varargin{2}) && isscalar(varargin{2}))), error('The movie path must be text.'); end;
+  o=struct('codec','prores4444','scale',1,'sound',true,'clock','live');
+  if numel(varargin)==3 && ~isempty(varargin{3})
+   given=varargin{3};
+   if ~(isstruct(given) && isscalar(given)), error('StartMovieRecording options must be a scalar struct.'); end;
+   names=fieldnames(given);
+   for j=1:numel(names)
+    if ~(isfield(o,names{j})), error('Unknown StartMovieRecording option %s.',names{j}); end;
+    if ~isempty(given.(names{j})), o.(names{j})=given.(names{j}); end
+   end
+  end
+  if ~(ischar(o.codec) && any(strcmp(o.codec,{'prores4444','prores422','hevc','h264'}))), error(...
+      'codec must be ''prores4444'', ''prores422'', ''hevc'' or ''h264''.'); end;
+  if ~(isnumeric(o.scale) && isscalar(o.scale) && o.scale>=0.05 && o.scale<=1), error('scale must be 0.05 to 1.'); end;
+  if ~(ischar(o.clock) && any(strcmp(o.clock,{'live','virtual'}))), error('clock must be ''live'' or ''virtual''.'); end;
+  PsychMetalCore('StartMovieRecording',char(varargin{2}),o.codec,double(o.scale),double(logicalFlag(o.sound,'sound')),double(strcmp(o.clock,'virtual')));
+
+ case 'stopmovierecording'
+  if ~(~isempty(S) && numel(varargin)==1 && isscalar(varargin{1}) && varargin{1}==S.buffer), error(...
+      'StopMovieRecording takes the window handle.'); end;
+  varargout={PsychMetalCore('StopMovieRecording')};
 
  case 'closemovie'
   if ~(numel(varargin)==1), error('CloseMovie takes a movie handle.'); end;
@@ -1122,7 +1200,7 @@ switch lower(command)
    PsychMetal('CloseTexture', S.buffer, varargin{1});
    return;
   end
-  sounds=zeros(0,4);for j=1:numel(S.movies),sounds=[sounds;S.movies(j).sounds];end %#ok<AGROW>
+  sounds=zeros(0,6);for j=1:numel(S.movies),sounds=[sounds;S.movies(j).sounds];end %#ok<AGROW>
   PsychMetalCore('Close');
   S = [];
   % Sounds outlive the window; a movie's go with it.
@@ -1155,6 +1233,7 @@ switch lower(command)
  case 'closeaudio'
   if ~(isempty(varargin)), error('CloseAudio takes no arguments.'); end;
   PsychMetalCore('CloseAudio');
+  if ~isempty(S), for j=1:numel(S.movies), S.movies(j).sounds=zeros(0,6); end; end
 
  case 'audiostatus'
   if ~(isempty(varargin)), error('AudioStatus takes no arguments.'); end;
@@ -1284,7 +1363,7 @@ switch lower(command)
 
  case 'version'
   if ~(isempty(varargin)), error('PsychMetal(''Version'') takes no arguments.'); end;
-  varargout = {'0.9.0'};
+  varargout = {'0.10.0'};
 
  otherwise
   error('PsychMetal:Command', ...
@@ -1364,7 +1443,7 @@ end
 
 function printGeneralHelp
 names=commandNames();
-fprintf('PsychMetal 0.9.0: native Metal on Apple Silicon.\n');
+fprintf('PsychMetal 0.10.0: native Metal on Apple Silicon.\n');
 fprintf('Use PsychMetal(''Command?'') for help. See README.md for supported contracts.\n');
 for k=1:numel(names), fprintf('  %s\n',names{k}); end
 end
@@ -1478,7 +1557,17 @@ switch name
    'edge 0 is exactly hard: each pixel is wholly in or out, so images meeting there are never mixed.\n' ...
    'Pass a recipe as DrawStimulus mask, or use its coverage argument with an image mask.\n']);
 
- case {'openmovie','movieframetimes','drawmovieframe','playmovie','refreshesperframe','closemovie'}
+ case {'startmovierecording','stopmovierecording'}
+  fprintf(['PsychMetal(''StartMovieRecording'',w,path[,struct(''codec'',''prores4444'',''scale'',1)]) records every frame\n' ...
+   'the window presents (Flip, QueueFlip, PlayTimeline, PlayMovie) until StopMovieRecording or Close. Each frame is\n' ...
+   'written once, stamped with the refresh it was aimed at; a frame held for several refreshes lasts that long.\n' ...
+   'No frame is dropped: if the encoder falls behind, Flip waits. Codecs: prores4444 (default), prores422, hevc,\n' ...
+   'h264; .mov for any, .mp4 or .m4v for hevc and h264. scale 0.05 to 1. sound (default true): with audio\n' ...
+   'open, what it plays is the movie''s sound track, placed by the times it is heard.\n' ...
+   'report=PsychMetal(''StopMovieRecording'',w): path, codec, width, height, frames, refreshes, refreshHz,\n' ...
+   'duration, late (frames shown late live, on time in the movie), unreported, sound, soundSeconds,\n' ...
+   'soundLostSeconds. See MOVIES.md.\n']);
+ case {'transcodemovie','preparemovie','openmovie','movieframetimes','drawmovieframe','playmovie','refreshesperframe','closemovie','moviesound'}
   fprintf(['[movie,info]=PsychMetal(''OpenMovie'',w,path) opens any movie AVFoundation reads (.mov, .mp4, .m4v;\n' ...
    'H.264, HEVC, ProRes, ...). info: width, height (as shown), frames, frameRate, duration, constantRate,\n' ...
    'soundChannels, soundRate, codec. Frames are numbered from 1. times=PsychMetal(''MovieFrameTimes'',movie).\n' ...
@@ -1488,6 +1577,7 @@ switch name
    '(default: RefreshesPerFrame(refresh rate, frame rate), the nearest, a half rounded up). Options: first,\n' ...
    'count, refreshes, srcRect, dstRect, when, sound (''auto'' plays the sound only at the movie''s own rate,\n' ...
    '''off'', ''resample'' moves its pitch with the speed, ''stretch'' keeps its pitch), gain.\n' ...
+   'samples=PsychMetal(''MovieSound'',movie[,rate]): the sound track, frames x channels, from the first frame.\n' ...
    'PsychMetal(''CloseMovie'',movie). See MOVIES.md.\n']);
  case 'playtimeline'
   fprintf(['result=PsychMetal(''PlayTimeline'',w,frames[,tracks,keyframes]) replays queued window draws natively.\n' ...
@@ -1582,7 +1672,8 @@ names={'CreateShader','CloseShader','DrawShader','MakeStimulus','MakeMask','Draw
 'NextRefresh','WaitToDraw','Diagnostic','Close','Version','Environment','ExportEnvironment','RecentFrames','PlayTimeline', ...
 'AudioDevices','OpenAudio','CloseAudio','AudioStatus','MakeSound','CloseSound','Play','StopSound','Modulate', ...
 'StartRecording','StopRecording','GetRecording','VoiceKey','InputRecent','AudioResults','Tone','Click','WhiteNoise', ...
-'OpenMovie','MovieFrameTimes','DrawMovieFrame','PlayMovie','RefreshesPerFrame','CloseMovie'};
+'OpenMovie','TranscodeMovie','PrepareMovie','MovieFrameTimes','DrawMovieFrame','PlayMovie','RefreshesPerFrame','CloseMovie','MovieSound', ...
+'StartMovieRecording','StopMovieRecording'};
 end
 
 function [kind, param, rect, color, extra, info] = buildShapes(cmd, args, S)

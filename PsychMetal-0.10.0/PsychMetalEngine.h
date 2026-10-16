@@ -1,4 +1,4 @@
-// PsychMetalEngine.h — host-neutral engine for PsychMetal 0.9.0.
+// PsychMetalEngine.h — host-neutral engine for PsychMetal 0.10.0.
 // SPDX-License-Identifier: MIT
 //
 // Plain C++17. It never includes mex.h, Python.h or an Objective-C header, so
@@ -51,7 +51,7 @@ namespace pm {
 
 // Engine version. Both front ends return it for 'Version'; PsychMetal.m and the
 // psychmetal package refuse to run against a different value.
-inline constexpr const char *kEngineVersion = "0.9.0";
+inline constexpr const char *kEngineVersion = "0.10.0";
 
 // Every error and warning identifier the engine emits.
 inline constexpr const char *kErrGeneral      = "PsychMetal:Error";
@@ -65,6 +65,7 @@ inline constexpr const char *kErrWindowOrigin = "PsychMetal:WindowOrigin";
 inline constexpr const char *kErrAudio        = "PsychMetal:Audio";
 inline constexpr const char *kErrMicrophone   = "PsychMetal:Microphone";  // input asked for, access refused
 inline constexpr const char *kErrNative       = "PsychMetal:NativeException";  // front ends: std::exception
+inline constexpr const char *kErrInterrupted  = "PsychMetal:Interrupted";  // Control-C or Command-period in the window
 inline constexpr const char *kWarnRefresh        = "PsychMetal:UnknownRefreshRate";
 inline constexpr const char *kWarnDisplayMapping = "PsychMetal:DisplayMapping";
 inline constexpr const char *kWarnDrainTimeout   = "PsychMetal:DrainTimeout";
@@ -72,6 +73,7 @@ inline constexpr const char *kWarnDisplayCapture = "PsychMetal:DisplayCapture";
 inline constexpr const char *kWarnInputMonitoring = "PsychMetal:InputMonitoring";
 inline constexpr const char *kWarnDebugger        = "PsychMetal:Debugger";
 inline constexpr const char *kWarnAudioRoute      = "PsychMetal:AudioRoute";
+inline constexpr const char *kWarnRecording       = "PsychMetal:Recording";
 
 class Error : public std::runtime_error {
 public:
@@ -196,6 +198,7 @@ PM_BLOCKING void prepareApp();
 struct OpenOptions {
     double screenIndex = 0;          // CoreGraphics active-display index; -1 = last
     uint64_t drawableCount = 3;      // 2 or 3
+    bool captureDisplay = true;     // macOS: opt out explicitly for compositor comparisons
     bool displayLink = false;       // CAMetalDisplayLink; macOS 14 / iOS 17+
     std::optional<double> refreshHz; // 20..1000; overrides the reported rate
     // Diagnostic sessions only. Drawables are created readable and every frame's
@@ -220,6 +223,9 @@ struct EnvironmentInfo { std::string engineVersion, platform, osVersion, gpuName
 // 'Environment'. No window, drawables, capture or presentation; GPU may be unavailable.
 EnvironmentInfo environment();
 PM_BLOCKING OpenResult openSession(const OpenOptions &options);
+// 'OpenExport'. Standalone Metal canvas, no window/display/drawables/startup.
+// Flip requires a virtual recording. Dimensions 2..8192, <=16,777,216 pixels.
+PM_BLOCKING OpenResult openExport(uint64_t width,uint64_t height,double refreshHz,bool readback=false);
 
 // What a playback submitted, and what the display reported of it. shown counts
 // the samples reported on screen (submitted - shown were never shown, or never
@@ -276,7 +282,7 @@ PM_BLOCKING void closeSession();
 // ---------------------------------------------------------------------------
 
 struct FlipResult {
-    double time;           // confirmed presentation time, else projected
+    double time;           // confirmed/projected physical time; logical refresh during virtual export
     bool confirmed;
     double slipRefreshes;  // slip of the previous confirmed frame, whole refreshes
     double gridPeriod;     // measured period if available, else nominal
@@ -313,6 +319,8 @@ FlipStatus flipStatus();
 // two seconds past the last one's time. A frame is reported once, with its
 // outcome; one still pending after that wait is reported as pending and again
 // by the next call, until ten seconds past its time, when it is given up on.
+// During virtual recording, queueFlip takes increasing logical targets; queueResults
+// still reports physical times, and its waits do not advance the logical clock.
 // status: 0 shown, 1 dropped, 2 still pending, 3 GPU error, 4 no drawable,
 // 5 cancelled. A frame whose store the GPU failed to render is not shown. queueCancel abandons frames not yet handed to the display and
 // returns how many.
@@ -790,6 +798,7 @@ struct DiagnosticSummary {
     Rect4 lastShapeRect, lastShapeColor;
     Rect4 screenSafeAreaInsets;   // top, left, bottom, right, in points
     double backingScaleFactor;    // pixels per point
+    bool displayCaptured;         // actual CoreGraphics capture state; false on iOS/export
 };
 
 struct DiagnosticReport {
@@ -808,12 +817,19 @@ struct MovieInfo {
     double frames = 0;               // video frames
     double frameRate = 0;            // frames per second: frames over the time they span
     double duration = 0;             // seconds
+    double keyframeInterval=0;         // largest sync-frame spacing, in frames; 0 unknown
     bool constantRate = true;        // every frame lasts the same time, to 0.1 %
     double soundChannels = 0, soundRate = 0;   // 0 when the movie has no sound
     std::string codec;               // the video codec, as four characters ("avc1", "hvc1", "apcn", ...)
 };
 // 'OpenMovie'. Reads the file's frame times (without decoding) and returns a handle.
 PM_BLOCKING uint64_t openMovie(const std::string &path, MovieInfo &info);
+// 'TranscodeMovie'. All-intra re-encoding without a window, preserving sample times.
+// Stereo audio is decoded/re-encoded; existing destination replaced only on success.
+PM_BLOCKING uint64_t transcodeMovie(const std::string &source,const std::string &destination,const std::string &codec);
+// 'PrepareMovie'. Decode a bounded lookahead ring; frames=0 preloads the complete movie after
+// checking its total decoded size against the explicit budget. Returns resident frames.
+PM_BLOCKING uint64_t prepareMovie(uint64_t movie,uint32_t frames,uint64_t maxBytes);
 // 'MovieFrameTimes'. Each frame's presentation time in the movie, seconds.
 std::vector<double> movieFrameTimes(uint64_t movie);
 // 'DrawMovieFrame'. Queues frame `index` like a texture: src as a fraction of the
@@ -835,6 +851,7 @@ struct MovieResult {
     double firstPresented = 0;           // when the display reported it (NaN if not reported)
     uint64_t shown = 0, late = 0, lateRefreshes = 0;
     double expectedRefreshHz = 0, longestIntervalMs = 0;
+    double audioStartOffsetMs=NAN,audioEndOffsetMs=NAN,audioVideoDriftMs=NAN;
     uint64_t voice = 0;                  // the sound's voice, 0 if none
 };
 // 'PlayMovie'. Frames first..first+count-1, each shown for `refreshes` refreshes,
@@ -846,6 +863,36 @@ PM_BLOCKING MovieResult playMovie(uint64_t movie, uint64_t first, uint64_t count
                                   const Rect4 &src, const Rect4 &dst, double when, uint64_t sound, double gain);
 // 'CloseMovie'.
 void closeMovie(uint64_t movie);
+
+// --- recording what PsychMetal draws (MOVIES.md) ---------------------------------
+// While recording, every frame the window presents (Flip, QueueFlip, PlayTimeline,
+// PlayMovie) is drawn by the GPU into the encoder's buffer, scaled, and written as
+// one movie frame stamped with the refresh it was aimed at, counted from the first
+// recorded frame: a frame held for several refreshes lasts that long in the movie.
+// No frame is dropped: if the encoder falls behind, Flip waits for it.
+struct MovieRecording {
+    std::string path, codec;
+    bool virtualClock = false;
+    double width = 0, height = 0;        // pixels, after scaling
+    double frames = 0;                   // movie frames written
+    double refreshes = 0;                // the movie's length in refreshes
+    double refreshHz = 0;                // the timebase: the display's nominal rate
+    double duration = 0;                 // seconds
+    double late = 0;                     // frames the display reported more than half a refresh after their aim
+    double unreported = 0;               // frames whose report was not (or no longer) available
+    bool sound = false;                  // a captured live or rendered generated sound track
+    double soundSeconds = 0;             // of sound written
+    double soundLostSeconds = 0;         // sound that did not reach the track (the tap overflowed)
+};
+// 'StartMovieRecording'. codec: prores4444, prores422, hevc or h264; .mov for any,
+// .mp4 or .m4v for hevc and h264. scale 0.05 to 1. An existing file is replaced.
+// sound: when audio is open, everything it plays from now on is the movie's sound
+// track (linear PCM in .mov, AAC in .mp4 and .m4v), placed by the times it is heard.
+// virtualClock: Flip/GetSecs use logical export time; newly scheduled generated
+// audio uses that timeline. Queued playback is refused; diagnostics stay physical.
+PM_BLOCKING void startMovieRecording(const std::string &path, const std::string &codec, double scale, bool sound, bool virtualClock = false);
+// 'StopMovieRecording'. Waits for every recorded frame to be encoded and finishes the file.
+PM_BLOCKING MovieRecording stopMovieRecording();
 
 }  // namespace pm
 

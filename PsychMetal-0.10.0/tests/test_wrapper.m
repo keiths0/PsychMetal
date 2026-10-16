@@ -185,12 +185,12 @@ assert(isequal(PsychMetal('RecentFrames',w),[6 0 1.5 1.49;7 2 0 1.51]) && PMTest
 PsychMetal('RecentFrames',w,256);assert(PMTestArgs{1}==256);
 reject(@() PsychMetal('RecentFrames',w,0));reject(@() PsychMetal('RecentFrames',w,1.5));reject(@() PsychMetal('RecentFrames',w+1));
 e=PsychMetal('Environment');
-assert(strcmp(e.engineVersion,'0.9.0') && e.schemaVersion==1 && any(strcmp(e.interpreter,{'Octave','MATLAB'})) && ...
+assert(strcmp(e.engineVersion,'0.10.0') && e.schemaVersion==1 && any(strcmp(e.interpreter,{'Octave','MATLAB'})) && ...
        any(strcmp(e.architecture,{'arm64','x86_64'})) && ~isfield(e,'window'));
 reject(@() PsychMetal('Environment',w+1));
 file=[tempname '.json'];
 assert(strcmp(PsychMetal('ExportEnvironment',file),file));
-text=fileread(file);assert(~isempty(strfind(text,'"engineVersion":"0.9.0"')));
+text=fileread(file);assert(~isempty(strfind(text,'"engineVersion":"0.10.0"')));
 reject(@() PsychMetal('ExportEnvironment',file));   % never overwrites
 delete(file);
 PsychMetal('Close',w);

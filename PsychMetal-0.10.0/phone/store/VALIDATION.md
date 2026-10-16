@@ -1,3 +1,11 @@
+# PsychMetal 0.10.0 — development validation
+
+See DEVELOPMENT-0.10.0.md in the package root for the current development
+checks. The record below was inherited from 0.9.0; it is historical evidence,
+not physical acceptance of 0.10.0. Phone wheels and the app need rebuilding.
+
+---
+
 # PsychMetal 0.9.0 validation — local acceptance, October 12, 2026
 
 Final rebuilt Mac binaries passed the checks recorded below, and Keith reported

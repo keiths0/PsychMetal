@@ -12,6 +12,9 @@ source = (root / 'PsychMetalEngine.mm').read_text()
 start = source.index('struct PMRealtimeWait {')
 function = source[start:source.index('\n}\n', start) + 3]
 code = r'''
+#include "PsychMetalRecordingClock.h"
+static pm::recording::Clock recordingClock;
+static bool exportSession=false;
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -50,7 +53,7 @@ static void mach_wait_until(uint64_t ticks) {
 }
 static double CACurrentMediaTime() { return clock_now += 1e-6; }   // the spin advances time
 [[noreturn]] static void fail(const char *s) { throw std::runtime_error(s); }
-namespace pm { double waitUntil(double); }
+namespace pm { double waitUntil(double); double now() noexcept { return CACurrentMediaTime(); } }
 ''' + function + r'''
 static double margin() { double until = clock_now + 0.1; pm::waitUntil(until); return until - asked; }
 int main() {
@@ -72,5 +75,5 @@ int main() {
 with tempfile.TemporaryDirectory() as d:
     p = Path(d)
     (p / 'wait.cpp').write_text(code)
-    subprocess.run(['clang++', '-std=c++17', '-fsanitize=address,undefined', str(p / 'wait.cpp'), '-o', str(p / 'wait')], check=True)
+    subprocess.run(['clang++', '-std=c++17', '-iquote',str(root), '-fsanitize=address,undefined', str(p / 'wait.cpp'), '-o', str(p / 'wait')], check=True)
     subprocess.run([str(p / 'wait')], check=True)

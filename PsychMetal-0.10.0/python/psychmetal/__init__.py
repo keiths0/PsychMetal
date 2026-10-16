@@ -52,7 +52,7 @@ import numpy as _np
 
 from . import _psychmetal as _core
 
-__version__ = '0.9.0'
+__version__ = '0.10.0'
 PsychMetalError = _core.PsychMetalError
 
 __all__ = [
@@ -60,7 +60,7 @@ __all__ = [
     'PsychMetalError', 'run', 'version', 'make_stimulus', 'make_mask', 'draw_stimulus', 'create_shader', 'draw_shader', 'close_shader',
     'open_window', 'close', 'make_texture', 'update_texture', 'draw_texture', 'draw_textures', 'draw_masked_texture', 'close_texture',
     'blend_function', 'linearize', 'draw_text', 'text_bounds', 'link_info', 'fill_poly', 'frame_poly', 'clip',
-    'open_offscreen_window', 'queue_flip', 'queue_results', 'queue_cancel', 'mouse_events', 'touch_events',
+    'open_export', 'open_offscreen_window', 'queue_flip', 'queue_results', 'queue_cancel', 'mouse_events', 'touch_events',
     'start', 'stop',
     'color_range', 'get_secs', 'wait_secs', 'resolution', 'resolutions',
     'rect', 'window_size', 'get_flip_interval', 'background_color', 'get_mouse', 'set_mouse', 'hide_cursor',
@@ -70,7 +70,8 @@ __all__ = [
     'fill_oval', 'frame_oval', 'fill_arc', 'frame_arc', 'draw_arc', 'draw_dots', 'draw_lines', 'draw_gabor', 'draw_noise', 'flip', 'flip_info',
     'grid_anchor', 'next_phase',
     'next_refresh', 'wait_to_draw', 'diagnostic', 'frame_stats',
-    'open_movie', 'movie_frame_times', 'draw_movie_frame', 'play_movie', 'refreshes_per_frame', 'close_movie',
+    'open_movie', 'transcode_movie', 'prepare_movie', 'movie_frame_times', 'draw_movie_frame', 'play_movie', 'refreshes_per_frame', 'close_movie',
+    'start_movie_recording', 'stop_movie_recording', 'movie_sound',
 ]
 
 
@@ -294,8 +295,16 @@ class _Opened(tuple):
         return False
 
 
+class _ExportOpened(_Opened):
+    """Standalone canvas cleanup does not change display cursor state."""
+    __slots__=()
+    def __exit__(self, kind, error, trace):
+        if _S is not None and _S['buffer']==self[0]: close(self[0])
+        return False
+
+
 def open_window(screen=None, color=None, drawable_count=None, refresh_hz=None, readback=None, bit_depth=None,
-                presentation="auto"):
+                presentation="auto", export_size=None, capture_display=True):
     """w, rect, ifi = open_window([screen, background, drawable_count], refresh_hz=None, readback=None,
     bit_depth=None, presentation='auto')
 
@@ -314,7 +323,17 @@ def open_window(screen=None, color=None, drawable_count=None, refresh_hz=None, r
             ...
     """
     global _S
+    exporting=export_size is not None
+    if exporting:
+        size=_np.asarray(export_size)
+        _check(size.shape==(2,) and size.dtype.kind in 'iuf' and _np.isfinite(size).all() and
+               (size==_np.floor(size)).all() and (size>=2).all() and (size<=8192).all() and
+               size.prod()<=16777216, 'export_size must be [width,height], 2..8192 and at most 16777216 pixels.')
+        _check(screen is None and bit_depth in (None,8) and presentation in ('auto','direct'),
+               'Export uses no screen, eight-bit colour and no display link.')
+        if refresh_hz is None: refresh_hz=60
     _check(_S is None, 'PsychMetal is already open. Close the existing window first.')
+    capture_display=_flag(capture_display,"capture_display")
     scr = -1.0 if screen is None else _number(screen, 'Screen number must be a non-negative integer.',
                                               lambda v: v >= 0 and v == int(v))
     bg = _np.array([0, 0, 0, 1.0]) if color is None else _rgba(color, 255.0)
@@ -324,6 +343,7 @@ def open_window(screen=None, color=None, drawable_count=None, refresh_hz=None, r
     bits = 8 if bit_depth is None else int(_number(bit_depth, 'bitDepth must be 8 or 10.', lambda v: v in (8, 10)))
     _check(isinstance(presentation, str) and presentation in ('auto', 'direct', 'displaylink'),
            "presentation must be 'auto', 'direct' or 'displaylink'.")
+    if exporting: presentation='offscreen'
     if presentation == 'auto':
         presentation = 'displaylink' if _core.default_presentation() else 'direct'
     linked = presentation == 'displaylink'
@@ -340,14 +360,19 @@ def open_window(screen=None, color=None, drawable_count=None, refresh_hz=None, r
         args.append(bits)
     if linked:
         args.append(True)
+    if not capture_display:
+        args=[scr,count,refresh_hz,rb,bits,linked,False]
     try:
-        _core.prepare_app()
-        width, height, ifi, point_w, point_h, token = _core.open_session(*args)
+        if exporting:
+            width,height,ifi,point_w,point_h,token=_core.open_export(int(size[0]),int(size[1]),float(refresh_hz),rb)
+        else:
+            _core.prepare_app()
+            width, height, ifi, point_w, point_h, token = _core.open_session(*args)
         _core.set_background_color(*map(float, bg))
         began = _time.perf_counter()
-        startup = _core.confirm_startup()
+        startup = _np.zeros((0,6)) if exporting else _core.confirm_startup()
         startup_seconds = _time.perf_counter() - began
-        link = _core.link_info()
+        link = _np.zeros(6) if exporting else _core.link_info()
     except BaseException:
         try:
             _core.close_session()
@@ -372,7 +397,19 @@ def open_window(screen=None, color=None, drawable_count=None, refresh_hz=None, r
               linearize=None, offscreen={}, target=0, clip=None, last_vbl_confirmed=False,
               last_queue_ms=float('nan'), last_flip_ms=float('nan'), flip_count=0, slip_count=0,
               last_slip_flip=float('nan'), last_slip_refreshes=0.0)
-    return _Opened((token, display_rect, ifi))
+    return (_ExportOpened if exporting else _Opened)((token, display_rect, ifi))
+
+
+def open_export(width, height, refresh_hz=60, color=None, readback=False):
+    """Open a standalone Metal export canvas, with no fullscreen window/display.
+
+    Use ordinary drawing calls and Flip with start_movie_recording(clock='virtual').
+    No physical presentation is claimed. Requires a Metal GPU; readback=True also
+    enables get_image. Dimensions are 2..8192, at most 16,777,216 pixels. The rate
+    is the movie timeline's nominal refresh rate, independent of any display.
+    """
+    return open_window(color=color,refresh_hz=refresh_hz,readback=readback,
+                       presentation='direct',export_size=(width,height))
 
 
 _environment_observer = None  # explicit, app-scoped capture at session close
@@ -805,7 +842,7 @@ def color_range(w, new_range=None):
 
 
 def get_secs():
-    """Seconds on the engine clock, the clock of every timestamp."""
+    """Engine seconds; logical during virtual recording. Device diagnostics stay physical."""
     return _core.now()
 
 
@@ -1792,6 +1829,33 @@ def open_movie(w, path):
     return handle, dict(info)
 
 
+def transcode_movie(source, destination, codec='h264'):
+    """Re-encode every frame as a keyframe, without opening a display window.
+
+    Preserves video sample timestamps and orientation. Audio becomes stereo PCM
+    in .mov or AAC in .mp4/.m4v. h264, hevc, prores422, prores4444 are supported
+    where the device can encode them; ProRes requires .mov. Returns frame count.
+    The previous destination survives any failed conversion.
+    """
+    import os
+    _check(isinstance(codec,str) and codec in _CODECS, 'Unsupported conversion codec.')
+    return _core.transcode_movie(os.fspath(source), os.fspath(destination), codec)
+
+
+def prepare_movie(w, movie, frames=8, max_bytes=256*1024*1024):
+    """Decode a lookahead ring before playback. frames=0 preloads the whole movie.
+
+    max_bytes bounds decoded BGRA pixels; raises before decoding if they do not fit.
+    Preloaded frames permit instant random access. Open movies default to an
+    eight-frame lookahead, reduced for large frames to fit 256 MiB.
+    """
+    _open(w, 'prepare_movie')
+    _movie(movie)
+    f=int(_number(frames, 'frames must be a whole number 0..256.', lambda x: 0<=x<=256 and x==int(x)))
+    b=int(_number(max_bytes, 'max_bytes must be a whole number 16..2147483648.', lambda x: 16<=x<=2147483648 and x==int(x)))
+    return _core.prepare_movie(int(_real(movie)),f,b)
+
+
 def movie_frame_times(movie):
     """Each frame's presentation time in the movie, seconds, from the file."""
     _movie(movie)
@@ -1904,12 +1968,25 @@ def play_movie(w, movie, first=0, count=None, refreshes=None, src_rect=None, dst
         else:
             mode = 'auto' if sound == 'auto' else sound
             s = 1.0 if mode == 'auto' else speed
-            key = (status['info']['rate'], round(s, 9), mode == 'stretch')
+            key = (status['info']['rate'], round(s, 9), mode == 'stretch', f0, n)
             handle = m['sounds'].get(key, 0)
             if not handle:
+                # Keep one cached track per movie; arbitrary subranges must
+                # not accumulate entire decoded soundtracks in memory.
+                for old in m['sounds'].values():
+                    _core.close_sound(old)
+                m['sounds'].clear()
                 samples = _core.movie_sound(int(_real(movie)), key[0], s, int(key[2]))
-                handle = _core.make_sound(samples, None)
-                m['sounds'][key] = handle
+                if f0 or n != total:
+                    times = movie_frame_times(movie)
+                    begin = int(_math.floor(max(0., (times[f0]-times[0])*key[0]/s)+.5))
+                    length = int(_math.floor(n/rate*key[0]+.5))
+                    samples = samples[begin:begin+length]
+                if len(samples):
+                    handle = _core.make_sound(samples, None)
+                    m['sounds'][key] = handle
+                else:
+                    mode = 'off'
     t = None if when is None else _number(when, 'when must be a finite GetSecs time, or None.')
     result = _core.play_movie(int(_real(movie)), f0, n, k, src, dst, t, handle, g)
     S = _S
@@ -1918,6 +1995,77 @@ def play_movie(w, movie, first=0, count=None, refreshes=None, src_rect=None, dst
     result.update(refreshes=k, rate=rate, sound=mode)
     _check_abort()
     return result
+
+
+_CODECS = ('prores4444', 'prores422', 'hevc', 'h264')
+
+
+def start_movie_recording(w, path, codec='prores4444', scale=1, sound=True, clock='live'):
+    """start_movie_recording(w, path, codec='prores4444', scale=1, sound=True, clock='live')
+
+    Records every frame the window presents from now on (flip, queue_flip,
+    play_timeline, play_movie) to a movie file, until stop_movie_recording or
+    close. Each frame is written once, stamped with the refresh it was aimed at,
+    counted from the first recorded frame, so a frame shown for several refreshes
+    lasts that long in the movie. No frame is dropped: if the encoder falls
+    behind, flip waits for it, so a live program may run slower while recording.
+
+    codec: 'prores4444' (default; visually lossless, large), 'prores422',
+    'hevc' or 'h264'. path ends in .mov (any codec), or .mp4 or .m4v (hevc,
+    h264); an existing file is replaced. scale: 0.05 to 1 of the window's size,
+    scaled on the GPU.
+
+    sound: when audio is open (open_audio), everything it plays from now on is
+    the movie's sound track, the output's first two channels, placed by the times
+    it is heard, so a sound scheduled for a frame's time is on that frame in the
+    movie. Linear PCM in .mov; AAC in .mp4 and .m4v. Audio opened after this is
+    not recorded.
+
+    clock='virtual': Flip and queued/native playback use logical refresh times;
+    time inside Flip is excluded from get_secs. wait_secs counts real waits.
+    New sound commands render on that logical timeline using the same mixer;
+    stop existing voices and open audio before recording. QueueFlip needs direct
+    presentation and increasing logical targets. Native playback excludes decode
+    and scene-sampling work; QueueResults waits do not stretch the export.
+    Frame-keyed Play resolves tokens from this recording: issue it immediately
+    after QueueFlip, before later frames. Retroactive PCM edits fail the export.
+    Device diagnostics/input/audio events stay physical.
+    The clock returns to physical time at stop/close. See MOVIES.md."""
+    _open(w, 'start_movie_recording')
+    import os
+    _check(isinstance(path, (str, os.PathLike)), 'The movie path must be a string.')
+    _check(codec in _CODECS, "codec must be 'prores4444', 'prores422', 'hevc' or 'h264'.")
+    s = _number(scale, 'scale must be 0.05 to 1.', lambda v: 0.05 <= v <= 1)
+    _check(isinstance(clock,str) and clock in ('live','virtual'), "clock must be 'live' or 'virtual'.")
+    _core.start_movie_recording(os.fspath(path), codec, s, int(_flag(sound, 'sound')), int(clock=='virtual'))
+
+
+def stop_movie_recording(w):
+    """report = stop_movie_recording(w)
+
+    Waits for the last frames to be encoded and finishes the file. report: path,
+    codec, width, height, frames (movie frames written), refreshes (its length in
+    refreshes), refreshHz (the timebase: the display's nominal rate), duration
+    (seconds), late (frames the display showed more than half a refresh after
+    their aim: in the movie they are on time, live they were not), unreported,
+    sound (whether the movie has a sound track), soundSeconds and soundLostSeconds
+    (sound that did not reach the track: none, unless the Mac was overloaded)."""
+    _open(w, 'stop_movie_recording')
+    return _core.stop_movie_recording()
+
+
+def movie_sound(movie, rate=None):
+    """samples = movie_sound(movie[, rate])
+
+    The movie's sound track, decoded: float32 (frames, channels), at most two
+    channels, from the first frame's time (sound that starts later begins with
+    silence), at `rate` Hz (default: the track's own). Sample i is heard at
+    movie time i / rate, the time movie_frame_times uses."""
+    m = _movie(movie)
+    _check(m['info']['soundChannels'] > 0, 'The movie has no sound.')
+    r = m['info']['soundRate'] if rate is None else _number(rate, 'rate must be 8000 to 384000 Hz.',
+                                                            lambda v: 8000 <= v <= 384000)
+    return _core.movie_sound(int(_real(movie)), r, 1.0, 0)
 
 
 def close_movie(movie):

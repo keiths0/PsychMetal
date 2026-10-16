@@ -1,6 +1,6 @@
-# PsychMetal Demos 0.9.0 submission handoff
+# PsychMetal Demos 0.10.0 submission handoff
 
-Version 0.9.0, build 1, with the existing app identity. It has not been uploaded to Apple. The 0.7.1 build-4 record is BUILD-4-0.7.1.md.
+Version 0.10.0, build 1, with the existing app identity. It has not been uploaded to Apple. The 0.7.1 build-4 record is BUILD-4-0.7.1.md.
 
 ## Local preparation
 
@@ -28,13 +28,13 @@ before signing. It does not sign a distribution archive or upload anything.
 
 1. Test every demo on iPhone and iPad, both orientations, touch/three-finger exit,
    background recovery, help and scrollable reports. Measure timing with Xcode
-   disconnected. Confirm the app's About page and the native engine both report 0.9.0.
+   disconnected. Confirm the app's About page and the native engine both report 0.10.0.
 2. Use an Apple-accepted public Xcode toolchain to rebuild wheels and the app,
    select your existing signing team and device destination, then Product > Archive.
    The local compilation used Xcode 27.1 (27A9275); compilation success alone does
    not establish App Store toolchain eligibility.
 3. Validate the new archive and inspect its privacy/dependency/signing findings.
-   Upload it to the existing App Store Connect app, version 0.9.0. Increase the
+   Upload it to the existing App Store Connect app, version 0.10.0. Increase the
    build number for each additional upload of this version. Wait for server-side
    processing before selecting the build.
 4. Reuse the existing app record and published support/privacy URLs. Update

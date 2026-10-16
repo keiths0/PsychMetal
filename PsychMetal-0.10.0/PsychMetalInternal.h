@@ -53,6 +53,10 @@ inline bool isByteImage(const ArrayView &image) {
 // returned in place, with no copy; anything else is packed into `scratch`.
 const uint8_t *packBytes(const ArrayView &image, std::vector<uint8_t> &scratch, ImageShape &shape);
 
+// Float32 keeps its precision. Contiguous grey/RGBA in-range input is validated
+// and returned in place; RGB, strided or clamped input is packed without half conversion.
+const void *packSingles(const ArrayView &image, std::vector<float> &scratch, ImageShape &shape);
+
 // Float32 and Float64 images become half floats, clamped to 0..1. __fp16 is
 // clang's half-precision storage type, which is what Metal's RGBA16Float and
 // R16Float textures hold.

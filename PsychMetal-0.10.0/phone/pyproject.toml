@@ -8,7 +8,7 @@
 [tool.briefcase]
 project_name = "PsychMetal Demos"
 bundle = "io.github.keiths0"
-version = "0.9.0"
+version = "0.10.0"
 url = "https://github.com/keiths0/PsychMetal"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -39,6 +39,9 @@ sources = [
     "../python/hidden_ring_demo.py",
     "../python/modulation_match_demo.py",
     "../python/audio_demo.py",
+    "../python/movie_demo.py",
+    "../python/record_demo.py",
+    "../python/export_demo.py",
 ]
 requires = [
     "numpy",
@@ -50,7 +53,7 @@ requires = [
 min_os_version = "17.0"
 requires = [
     "toga-iOS~=0.5.7",
-    "psychmetal==0.9.0",
+    "psychmetal==0.10.0",
 ]
 requirement_installer_args = ["--find-links", "./wheels"]
 # Without this an iPhone holds the app to 60 Hz whatever its display can do.

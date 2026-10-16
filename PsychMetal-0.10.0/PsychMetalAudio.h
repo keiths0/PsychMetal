@@ -29,7 +29,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
+#include <thread>
 #include <vector>
 
 namespace pm { namespace audio {
@@ -83,6 +85,7 @@ struct Modulation {
 
 struct Command {
     enum Kind : uint8_t { Play, Stop, StopAll, Modulate } kind = Play;
+    uint64_t generation = 0;      // interruption epoch when the host issued Play
     uint64_t voice = 0;           // Play: the new voice's id; Stop, Modulate: the voice
     const Sound *sound = nullptr; // Play: kept alive by the host until the voice ends
     double when = NAN;            // GetSecs time; NaN: at once
@@ -98,6 +101,7 @@ struct Event {
         Late,       // Start: its time had passed; it started on the buffer's first sample
         Finished,   // End: played to the end
         Stopped,    // End: stopped, before or while playing
+        Interrupted, // End: an interruption invalidated this voice
         Refused,    // End: no free voice; never played
     } status = OnTime;
     uint64_t voice = 0;
@@ -105,8 +109,97 @@ struct Event {
     double time = NAN;            // Start: its first sample; End: just after its last
 };
 
+// A copy of what the mixer played, for a movie's sound track: the first two
+// channels (one channel copied to both), interleaved, in blocks with the time
+// their first sample is heard. The audio callback fills it; one other thread
+// empties it. A block that does not fit is counted, never waited for.
+struct TapBlock {
+    static constexpr uint32_t kFrames = 1024;
+    double onset = 0, rate = 0;
+    uint32_t frames = 0;
+    float samples[2 * kFrames];
+};
+class Tap {
+public:
+    Ring<TapBlock, 256> blocks;
+    std::atomic<uint64_t> lostFrames{0};
+    void capture(const float *const *out, uint32_t channels, uint32_t frames, double onset, double rate) noexcept {
+        if (!channels) return;
+        for (uint32_t at = 0; at < frames; at += TapBlock::kFrames) {
+            const uint32_t n = frames - at < TapBlock::kFrames ? frames - at : TapBlock::kFrames;
+            block_.onset = onset + at / rate;
+            block_.rate = rate;
+            block_.frames = n;
+            const float *left = out[0] + at, *right = (channels > 1 ? out[1] : out[0]) + at;
+            for (uint32_t i = 0; i < n; i++) { block_.samples[2 * i] = left[i]; block_.samples[2 * i + 1] = right[i]; }
+            if (!blocks.push(block_)) lostFrames.fetch_add(n, std::memory_order_relaxed);
+        }
+    }
+private:
+    TapBlock block_;    // the callback's own: no large copy on its stack
+};
+
+// Recorder-thread backlog, not an audio-callback object. Before the first
+// video frame, keep only recent sound: waiting for a first Flip must not grow
+// memory forever. Discarded samples after the video's origin count as lost.
+class TapBacklog {
+public:
+    static constexpr size_t kBlocks = 256;
+    uint64_t push(const TapBlock &block, double first) {
+        uint64_t lost = 0;
+        if (blocks_.size() == kBlocks) {
+            const TapBlock &old = blocks_.front();
+            if (std::isfinite(first) && old.rate > 0) {
+                const double skipped = std::clamp(std::round((first - old.onset) * old.rate),
+                                                 0.0, (double)old.frames);
+                lost = old.frames - (uint64_t)skipped;
+            }
+            blocks_.pop_front();
+        }
+        blocks_.push_back(block);
+        return lost;
+    }
+    bool empty() const { return blocks_.empty(); }
+    size_t size() const { return blocks_.size(); }
+    const TapBlock &front() const { return blocks_.front(); }
+    void pop_front() { blocks_.pop_front(); }
+private:
+    std::deque<TapBlock> blocks_;
+};
+
+// Host detaches before deleting a tap. The callback announces its read before
+// loading the pointer; sequential consistency ensures detach cannot miss a
+// reader that obtained the old pointer. Only the host waits, never the callback.
+class TapConnection {
+public:
+    void attach(Tap *tap) noexcept { value_.store(tap); }
+    void detach(Tap *tap) noexcept {
+        Tap *expected = tap;
+        if (!value_.compare_exchange_strong(expected, nullptr)) return;
+        while (readers_.load() != 0) std::this_thread::yield();
+    }
+    template<class F> void withTap(F &&f) noexcept {
+        readers_.fetch_add(1);
+        if (Tap *tap = value_.load()) f(*tap);
+        readers_.fetch_sub(1);
+    }
+private:
+    static_assert(std::atomic<Tap *>::is_always_lock_free &&
+                  std::atomic<unsigned>::is_always_lock_free, "Audio tap requires lock-free atomics");
+    std::atomic<Tap *> value_{nullptr};
+    std::atomic<unsigned> readers_{0};
+};
+
 class Mixer {
 public:
+    // While a movie is recorded: what is played is also copied here.
+    TapConnection tap;
+    std::atomic<uint64_t> interruptionGeneration{0};
+    void interrupt(double when) noexcept {
+        interruptedAt_.store(when);
+        interruptionGeneration.fetch_add(1);
+    }
+    void resumed() noexcept { restarted_.store(true); }
     static constexpr size_t kVoices = 256;
     static constexpr size_t kRing = 1024;
 
@@ -130,7 +223,12 @@ public:
     // The audio callback. out[c] receives `frames` samples for channel c.
     void render(float *const *out, uint32_t channels, uint32_t frames,
                 double onset, double samplesPerSecond) noexcept {
-        if (onset - expectedOnset_ > kGap) gap.store(true, std::memory_order_relaxed);
+        if (restarted_.exchange(false)) expectedOnset_ = NAN;
+        if (onset - expectedOnset_ > kGap) {
+            gap.store(true, std::memory_order_relaxed);
+            interrupt(expectedOnset_);
+        }
+        syncInterruption();
         expectedOnset_ = onset + frames / samplesPerSecond;
         Command c;
         // Bound work even when the host keeps replenishing the queue.
@@ -147,6 +245,7 @@ public:
                 else if (s < -1) { s = -1; clipped++; }
             }
         if (clipped) clippedSamples.fetch_add(clipped, std::memory_order_relaxed);
+        tap.withTap([&](Tap &t) { t.capture(out, channels, frames, onset, samplesPerSecond); });
     }
 
 private:
@@ -164,6 +263,16 @@ private:
         bool changing = false;
     };
     std::array<Voice, kVoices> voices_{};
+    std::atomic<bool> restarted_{false};
+    std::atomic<double> interruptedAt_{NAN};
+    uint64_t interruptionSeen_ = 0;
+    void syncInterruption() noexcept {
+        const uint64_t generation = interruptionGeneration.load();
+        if (generation == interruptionSeen_) return;
+        const double at = interruptedAt_.load();
+        for (Voice &v : voices_) if (v.sound) end(v, Event::Interrupted, at);
+        interruptionSeen_ = generation;
+    }
     double expectedOnset_ = NAN;   // where the next callback should start
 
     void emit(const Event &e) noexcept {
@@ -181,6 +290,12 @@ private:
     }
     void apply(const Command &c) noexcept {
         if (c.kind == Command::Play) {
+            syncInterruption();
+            if (c.generation != interruptionSeen_) {
+                emit(Event{Event::End, Event::Interrupted, c.voice, c.when, interruptedAt_.load()});
+                retire(c.voice);
+                return;
+            }
             for (Voice &v : voices_)
                 if (!v.sound) {
                     v = Voice{};
@@ -315,6 +430,7 @@ private:
 // device's input (its host time less the input latency).
 struct InputCommand {
     enum Kind : uint8_t { Record, StopRecording, ArmKey, DisarmKey } kind = Record;
+    uint64_t generation = 0;      // interruption epoch when Record/ArmKey was issued
     uint64_t id = 0;              // the recording's or key's id, echoed in its events
     double when = NAN;            // GetSecs time; NaN: at once
     float threshold = 0;          // ArmKey: absolute amplitude, 0..1
@@ -330,6 +446,7 @@ struct InputEvent {
         Late,       // RecordStart: its time had passed; it started on the buffer's first sample
         Stopped,    // RecordEnd: stopped as asked
         Full,       // RecordEnd: the memory allocated for recording is full
+        Interrupted, // RecordEnd: input was interrupted
         Triggered,  // Key: the first sample of the qualifying window
     } status = OnTime;
     uint64_t id = 0;
@@ -342,6 +459,11 @@ struct InputEvent {
 
 class Recorder {
 public:
+    std::atomic<uint64_t> interruptionGeneration{0};
+    void interrupt(double when) noexcept {
+        interruptedAt_.store(when);
+        interruptionGeneration.fetch_add(1);
+    }
     static constexpr size_t kRing = 256;
     static constexpr uint32_t kMaxWindow = 16384;   // a third of a second at 48 kHz
 
@@ -408,6 +530,7 @@ public:
     // The capture callback. in[c] holds `frames` samples for channel c.
     void capture(const float *const *in, uint32_t channels, uint32_t frames,
                  double onset, double samplesPerSecond) noexcept {
+        syncInterruption();
         InputCommand c;
         // Bound work even when the host keeps replenishing the queue.
         for (size_t i = 0; i < kRing && commands.pop(c); ++i) apply(c);
@@ -430,6 +553,15 @@ public:
     }
 
 private:
+    std::atomic<double> interruptedAt_{NAN};
+    uint64_t interruptionSeen_ = 0;
+    void syncInterruption() noexcept {
+        const uint64_t generation = interruptionGeneration.load();
+        if (generation == interruptionSeen_) return;
+        if (recording_) finishRecording(InputEvent::Interrupted, interruptedAt_.load());
+        keyArmed_ = keyListening_ = false;
+        interruptionSeen_ = generation;
+    }
     std::unique_ptr<std::atomic<float>[]> monitor_;
     std::vector<float> samples_;
     uint32_t channels_ = 0;
@@ -453,6 +585,14 @@ private:
         if (!events.push(e)) lostEvents.fetch_add(1, std::memory_order_relaxed);
     }
     void apply(const InputCommand &c) noexcept {
+        syncInterruption();
+        if ((c.kind == InputCommand::Record || c.kind == InputCommand::ArmKey) &&
+            c.generation != interruptionSeen_) {
+            if (c.kind == InputCommand::Record)
+                emit(InputEvent{InputEvent::RecordEnd, InputEvent::Interrupted, c.id, c.when,
+                                interruptedAt_.load(), 0, 0});
+            return;
+        }
         switch (c.kind) {
         case InputCommand::Record:
             if (recording_) finishRecording(InputEvent::Stopped, NAN);

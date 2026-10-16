@@ -1,8 +1,8 @@
 # Demo coverage in the phone app
 
-All sixteen public non-keyboard MATLAB/Octave demos have Python equivalents; all
-but the minimal demo, the stimulus example and the movie demo are in the phone app. The app runs those shared Python programs rather than separate
-copies. Keyboard and keyboard-queue demos are excluded.
+Public non-keyboard MATLAB/Octave demos have Python equivalents. All except the
+minimal template and the stimulus API example are in the phone app, which runs
+the shared Python programs. Keyboard and keyboard-queue demos are excluded.
 
 | MATLAB / Octave | Python | Phone menu |
 |---|---|---|
@@ -21,7 +21,9 @@ copies. Keyboard and keyboard-queue demos are excluded.
 | PsychMetalShaderDemo | shader_demo | Custom GPU spiral |
 | PsychMetalModulationMatchDemo | modulation_match_demo | Matching flicker and sound |
 | PsychMetalAudioDemo | audio_demo | Sound recorder |
-| PsychMetalMovieDemo | movie_demo | (Mac only, for now: it plays a movie file. On the phone it wants a movie chosen from Photos, not yet written) |
+| PsychMetalRecordDemo | record_demo | Record a stimulus (H.264, app-local file, then replay) |
+| PsychMetalMovieDemo | movie_demo | Movie playback (bundled numbered sample with sound) |
+| PsychMetalExportDemo | export_demo | Export a stimulus (standalone Metal canvas, app-local H.264 movie) |
 
 Phone additions remain: the rotating rectangle ring and the optional Frame
 timing test. The hidden ring, once four phone-only entries (still or scrolling,

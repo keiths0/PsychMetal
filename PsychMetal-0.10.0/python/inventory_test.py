@@ -473,12 +473,20 @@ def inventory_test(verbose=False):
             check('open_movie reports frames, rate, size and sound', lambda: movie_info['frames'] == 90 and
                   abs(movie_info['frameRate'] - 30) < 1e-6 and (movie_info['width'], movie_info['height']) == (160, 96)
                   and movie_info['soundChannels'] == 2 and movie_info['constantRate'])
+            check('prepare_movie bounded lookahead', lambda: ipm.prepare_movie(w, movie, 4)==4)
+            reject('prepare_movie negative frames', lambda: ipm.prepare_movie(w, movie, -1))
+            reject('prepare_movie insufficient preload budget', lambda: ipm.prepare_movie(w, movie, 0, 16))
+            reject('transcode_movie same destination', lambda: ipm.transcode_movie(movie_file, movie_file))
+            reject('transcode_movie unsupported codec', lambda: ipm.transcode_movie(movie_file, '/tmp/invalid.mp4', 'wrong'))
             check('movie_frame_times: one per frame, 1/30 s apart',
                   lambda: np.allclose(np.diff(ipm.movie_frame_times(movie)), 1 / 30) and
                   len(ipm.movie_frame_times(movie)) == 90)
             # In order, back, forward past a key frame, and the last: each read back by its number.
             check('draw_movie_frame draws the frame asked for, in any order',
                   lambda: assert_movie_frames(ipm, w, movie, [0, 1, 2, 37, 3, 89, 16]))
+            check('movie_sound: the track from the first frame, clicks on whole seconds',
+                  lambda: assert_movie_sound(ipm.movie_sound(movie, 48000), 48000))
+            reject('movie_sound at 1 Hz rejected', lambda: ipm.movie_sound(movie, 1))
             check('refreshes_per_frame: nearest whole number, a half rounded up',
                   lambda: [ipm.refreshes_per_frame(*r) for r in [(60, 30), (60, 24), (120, 50), (60, 120)]] == [2, 3, 2, 1])
             check('play_movie shows every frame for the same number of refreshes', lambda: assert_play_movie(ipm, w, movie))
@@ -493,6 +501,15 @@ def inventory_test(verbose=False):
             reject('play_movie with an unknown sound mode rejected', lambda: ipm.play_movie(w, movie, sound='loud'))
             reject("play_movie sound='resample' without audio rejected", lambda: ipm.play_movie(w, movie, 0, 2, sound='resample'))
             reject('play_movie with zero refreshes rejected', lambda: ipm.play_movie(w, movie, 0, 2, refreshes=0))
+            check('start_movie_recording and stop_movie_recording: every frame at the refresh it was aimed at',
+                  lambda: assert_recording(ipm, w, rb_rect))
+            reject('start_movie_recording with an unknown codec rejected',
+                   lambda: ipm.start_movie_recording(w, Path(tempfile.gettempdir()) / 'x.mov', 'vp9'))
+            reject('start_movie_recording of ProRes to .mp4 rejected',
+                   lambda: ipm.start_movie_recording(w, Path(tempfile.gettempdir()) / 'x.mp4', 'prores4444'))
+            reject('start_movie_recording at scale 0 rejected',
+                   lambda: ipm.start_movie_recording(w, Path(tempfile.gettempdir()) / 'x.mov', scale=0))
+            reject('stop_movie_recording when not recording rejected', lambda: ipm.stop_movie_recording(w))
             check('close_movie', lambda: ipm.close_movie(movie))
             reject('a closed movie cannot be drawn', lambda: ipm.draw_movie_frame(w, movie, 0))
             reject('close_movie twice rejected', lambda: ipm.close_movie(movie))
@@ -502,6 +519,11 @@ def inventory_test(verbose=False):
 
         # ---- did we cover the inventory? ----------------------------------------
         declared = commands_in_package()
+        reject('invalid export dimensions are rejected', lambda: ipm.open_export(0, 48))
+        w, export_rect, export_ifi = ipm.open_export(64, 48, refresh_hz=60)
+        record('standalone export canvas opens at requested dimensions/rate',
+               np.array_equal(export_rect, [0, 0, 64, 48]) and abs(export_ifi-1/60)<1e-9)
+        ipm.close(w)
         missing = sorted(set(declared) - ipm.called)
         record('every command in the package is exercised', not missing, 'not covered: ' + ', '.join(missing))
     except BaseException:
@@ -576,6 +598,64 @@ def assert_test_movies(ipm, w, folder):
             ipm.close_movie(movie)
     if problems:
         raise AssertionError('; '.join(problems))
+    return True
+
+
+def draw_number(ipm, w, rect, k):
+    """The test movies' pattern across the window: 16 bars in the top half, bar i white if bit i of k is set."""
+    W, H = rect[2], rect[3]
+    ipm.fill_rect(w, 0)
+    bars = [[W * i / 16, 0, W * (i + 1) / 16, H / 2] for i in range(16) if (k >> i) & 1]
+    if bars:
+        ipm.fill_rect(w, 255, np.array(bars).T)
+
+
+def assert_recording(ipm, w, rect):
+    """Ten frames on consecutive refreshes, then one three refreshes later, queued so their aims are exact;
+    recorded, opened as a movie, and each frame read back by its number."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / 'recorded.mov'
+        ipm.start_movie_recording(w, path, scale=0.25)
+        try:
+            ipm.start_movie_recording(w, path)
+            raise AssertionError('a second start_movie_recording was accepted')
+        except pm.PsychMetalError:
+            pass
+        ifi = ipm.get_flip_interval(w)
+        t0 = ipm.get_secs() + 10 * ifi
+        for k in range(11):
+            draw_number(ipm, w, rect, k)
+            ipm.queue_flip(w, t0 + (k if k < 10 else 12) * ifi)
+        ipm.queue_results(w)
+        report = ipm.stop_movie_recording(w)
+        if report['frames'] != 11 or report['refreshes'] != 13 or report['codec'] != 'prores4444':
+            raise AssertionError(str(report))
+        movie, info = ipm.open_movie(w, path)
+        try:
+            times = ipm.movie_frame_times(movie)
+            steps = np.round(np.diff(times) * report['refreshHz'], 3)
+            if info['frames'] != 11 or list(steps) != [1] * 9 + [3]:
+                raise AssertionError(f"{info['frames']} frames, refresh steps {list(steps)}")
+            for k in range(11):
+                ipm.fill_rect(w, 0)
+                ipm.draw_movie_frame(w, movie, k, None, [0, 0, 160, 96], 0, 0)
+                ipm.flip(w)
+                seen = movie_frame_number(ipm.get_image(w, [0, 0, 160, 96]))
+                if seen != k:
+                    raise AssertionError(f'recorded frame {k} plays back as {seen}')
+        finally:
+            ipm.close_movie(movie)
+    return True
+
+
+def assert_movie_sound(samples, rate):
+    """make_test_movie's sound: 90 frames at 30 per second is 3 s; a click at 0.9 starting each second."""
+    if samples.shape[1] != 2 or abs(samples.shape[0] - 3 * rate) > 1024 + 1:
+        raise AssertionError(f'shape {samples.shape}')
+    loud = np.flatnonzero(np.abs(samples[:, 0]) > .5)
+    starts = loud[np.r_[True, np.diff(loud) > rate / 10]] / rate
+    if not np.allclose(starts, [0, 1, 2], atol=.002):
+        raise AssertionError(f'clicks at {starts}')
     return True
 
 

@@ -194,3 +194,64 @@ Sound samples supplied to MakeSound / make_sound must be normalized to -1..1.
 Use playback gain for amplification; the final mixed output is clipped and
 counted. WhiteNoise / white_noise takes a finite nonnegative amplitude; zero
 produces silence.
+
+## Interruptions in 0.10.0
+
+An explicit interruption ends playing and queued sounds with status
+`interrupted`; microphone recording ends with its saved sample count and the
+same status, and voice-key detection is disarmed. Old commands cannot restart
+an interrupted stimulus. These events become available when the device's next
+callback processes the interruption; they are system-notification timestamps,
+not measurements of acoustic onset or offset.
+
+On iOS, PsychMetal stops its output unit and, when the system sends an ended
+notification with `shouldResume`, reactivates the audio session and restarts the
+unit on a serial recovery queue. It does not replay interrupted stimuli. A
+new sound may be started after recovery; while the session remains interrupted,
+new playback and microphone-recording requests are refused. Closing invalidates
+queued recovery work before disposing the audio unit. If the system declines
+resume or restarting fails, close/reopen audio. See Apple's
+[interruption guidance](https://developer.apple.com/documentation/avfaudio/handling-audio-interruptions).
+
+On both Mac and iOS, an unreported output callback gap greater than 50 ms ends
+old voices rather than replaying stale sound. A route-change warning still
+invalidates timed work until close/reopen; moving to another physical Mac device
+is not an automatic retargeting operation. Siri that mutes output while callbacks
+continue cannot be detected by the callback-gap check.
+
+## During virtual-clock movie recording
+
+Generated sound requests use the logical export timeline. A separate instance
+of the same mixer renders the movie's PCM; live device scheduling maps requests
+back onto the physical clock at issue time. Consequently live output event
+timestamps (including requested times) remain physical diagnostics. Microphone
+recording and voice keys are not virtualized; use these operations outside
+virtual-clock recording. Live sound
+can run ahead of a display slowed by export; use the saved movie's track for the
+intended sequence. See MOVIES.md for the clock mode and supported commands.
+
+Frame-keyed Play is supported during virtual recording with QueueFlip tokens
+from that recording. The exported onset uses the logical frame aim plus offset;
+the device targets the physical projection. Schedule Play immediately after
+QueueFlip and before submitting later frames. Requests cannot rewrite PCM the
+writer has already claimed: a retroactive request fails the export rather than
+moving the sound to a later sample. Frame tokens are retained for at most the
+last 16,384 queued frames and do not carry across recording sessions.
+
+### Mac recovery in 0.10.0 development
+
+Device removal or unexpected rate/buffer changes interrupt current sounds and
+recording. On the next audio API call PsychMetal stops/disposes the old units,
+reopens available endpoints, and retains loaded sound handles and saved recording
+samples. An unavailable explicit endpoint falls back to the current default; an
+available explicit endpoint stays selected. Client sample rates are preserved
+so retained PCM is not played at a different rate. A device that cannot supply
+the required format leaves playback paused; host calls retry at most once per
+second. Interrupted voices never resume automatically. Route changes leave
+`timed=false`; close/reopen audio before relying on timing on the new route.
+This recovery runs on the host thread, never in the real-time audio callback.
+
+If two previously separate devices used different sample rates and recovery
+would put input and output on one shared device, recovery refuses that format
+instead of silently changing either rate. CloseAudio and reopen to select a
+common format; saved samples and sound handles remain intact until close.

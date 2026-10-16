@@ -55,7 +55,7 @@ inline uint32_t noiseBase(uint32_t seed, uint32_t ix, uint32_t iy) {
 struct Source { const unsigned char *base; ptrdiff_t sy, sx, sc; };
 
 pm::internal::ImageShape checkImage(const pm::ArrayView &image) {
-    if (image.type == pm::ScalarType::Other || image.ndim < 2 || image.ndim > 3)
+    if (!image.data || image.type == pm::ScalarType::Other || image.ndim < 2 || image.ndim > 3)
         fail("Image must be dense real uint8, single, double, or logical HxWxC.");
     size_t h = image.shape[0], w = image.shape[1], c = image.ndim == 3 ? image.shape[2] : 1;
     if (!h || !w || h > 16384 || w > 16384 || !(c == 1 || c == 3 || c == 4))
@@ -180,6 +180,33 @@ pm::internal::ImageShape pm::internal::packImage(const pm::ArrayView &image, std
     else if (image.type == pm::ScalarType::Float32) packFloats<float>(sourceOf(image), shape, out);
     else fail("Image must be dense real uint8, single, double, or logical HxWxC.");
     return shape;
+}
+
+const void *pm::internal::packSingles(const pm::ArrayView &image, std::vector<float> &scratch, ImageShape &shape) {
+    shape=checkImage(image);
+    if(image.type!=pm::ScalarType::Float32 && image.type!=pm::ScalarType::Float64) fail("Direct float images must be single or double precision.");
+    const auto src=sourceOf(image);const size_t c=shape.channels;
+    if(image.type==pm::ScalarType::Float64) {
+        pack(src,shape,scratch,1.f,[](const unsigned char *p,float &out) {
+            double v;std::memcpy(&v,p,8);if(!std::isfinite(v))fail("Texture pixels must be finite.");
+            out=(float)std::max(0.0,std::min(1.0,v));
+        });return scratch.data();
+    }
+    bool direct=c!=3 && src.sx==(ptrdiff_t)(c*4) && src.sy==(ptrdiff_t)(shape.width*c*4) && (c==1||src.sc==4);
+    if(direct) {
+        for(size_t i=0;i<shape.height*shape.width*c;i++) {
+            float value;std::memcpy(&value,src.base+i*4,4);
+            if(!std::isfinite(value)) fail("Texture pixels must be finite.");
+            if(value<0||value>1) { direct=false; break; } // packing validates the remaining pixels
+        }
+        if(direct) return src.base; // replaceRegion accepts unaligned source bytes
+    }
+    pack(src,shape,scratch,1.f,[](const unsigned char *p,float &out) {
+        float value;std::memcpy(&value,p,4);
+        if(!std::isfinite(value)) fail("Texture pixels must be finite.");
+        out=std::max(0.f,std::min(1.f,value));
+    });
+    return scratch.data();
 }
 
 const uint8_t *pm::internal::packBytes(const pm::ArrayView &image, std::vector<uint8_t> &scratch,

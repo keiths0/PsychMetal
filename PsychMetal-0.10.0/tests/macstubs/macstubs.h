@@ -272,8 +272,10 @@ extern "C" dispatch_semaphore_t dispatch_semaphore_create(long);
 extern "C" long dispatch_semaphore_signal(dispatch_semaphore_t);
 extern "C" long dispatch_semaphore_wait(dispatch_semaphore_t, dispatch_time_t);
 extern "C" int pthread_main_np(void);
+#ifndef __APPLE__
 extern "C" int pthread_set_qos_class_self_np(int qosClass, int relativePriority);
 enum { QOS_CLASS_USER_INTERACTIVE = 0x21 };
+#endif
 #define pthread_setname_np(name) ((void)(name))   // macOS: one argument, names the calling thread
 extern "C" int pthread_cond_timedwait_relative_np(pthread_cond_t *, pthread_mutex_t *, const struct timespec *);
 extern "C" double CACurrentMediaTime(void);
@@ -293,6 +295,9 @@ enum { NSUTF8StringEncoding = 4 };
 @property (readonly) const char *UTF8String;
 + (instancetype)stringWithFormat:(NSString *)format, ...;
 + (instancetype)stringWithUTF8String:(const char *)s;
+@end
+@interface NSException : NSObject
+@property (readonly, copy) NSString *reason;
 @end
 @interface NSError : NSObject
 @property (readonly, copy) NSString *localizedDescription;
@@ -316,7 +321,11 @@ extern NSRunLoopMode const NSDefaultRunLoopMode;
 @property (readonly) unsigned int unsignedIntValue;
 @end
 @interface NSDictionary<K, V> : NSObject
+- (id)mutableCopy;
 - (V)objectForKeyedSubscript:(K)key;
+@end
+@interface NSMutableDictionary<K,V> : NSDictionary<K,V>
+- (void)setObject:(V)object forKeyedSubscript:(K)key;
 @end
 @interface NSBundle : NSObject
 @property (class, readonly, strong) NSBundle *mainBundle;
@@ -358,8 +367,21 @@ enum { NSWindowOcclusionStateVisible = 1 << 1 };
 @property (readonly) NSTimeInterval timestamp;
 + (NSEvent *)eventWithCGEvent:(CGEventRef)cgEvent;
 @end
+typedef NSUInteger NSEventModifierFlags;
+enum { NSEventModifierFlagControl = 1 << 18, NSEventModifierFlagCommand = 1 << 20,
+       NSEventModifierFlagDeviceIndependentFlagsMask = 0xffff0000UL };
+enum { NSEventMaskKeyDown = 1 << 10, NSEventMaskKeyUp = 1 << 11, NSEventMaskFlagsChanged = 1 << 12 };
+@interface NSString (Keys)
+@property (readonly, copy) NSString *lowercaseString;
+- (BOOL)isEqualToString:(NSString *)other;
+@end
+@interface NSEvent (Keys)
+@property (readonly) NSEventModifierFlags modifierFlags;
+@property (readonly, copy) NSString *charactersIgnoringModifiers;
+@end
 @interface NSView : NSObject
 - (instancetype)initWithFrame:(NSRect)frame;
+- (BOOL)performKeyEquivalent:(NSEvent *)event;
 @property NSRect bounds;
 @property NSAutoresizingMaskOptions autoresizingMask;
 @property BOOL wantsLayer;
@@ -408,7 +430,7 @@ extern NSApplication *NSApp;
 
 // ---- Metal -----------------------------------------------------------------
 typedef NSUInteger MTLPixelFormat;
-enum { MTLPixelFormatR8Unorm = 10, MTLPixelFormatR16Float = 25, MTLPixelFormatRGBA8Unorm = 70,
+enum { MTLPixelFormatR8Unorm = 10, MTLPixelFormatR16Float = 25, MTLPixelFormatR32Float = 55, MTLPixelFormatRGBA8Unorm = 70,
        MTLPixelFormatBGRA8Unorm = 80, MTLPixelFormatBGR10A2Unorm = 94, MTLPixelFormatRGBA16Float = 115, MTLPixelFormatRGBA32Float = 125 };
 typedef NSUInteger MTLTextureUsage;
 enum { MTLTextureUsageShaderRead = 1, MTLTextureUsageRenderTarget = 4 };
@@ -443,6 +465,7 @@ struct MTLClearColor { double red, green, blue, alpha; };
 MTLClearColor MTLClearColorMake(double r, double g, double b, double a);
 
 @protocol MTLTexture
+@property(readonly) MTLPixelFormat pixelFormat;
 @property (readonly) NSUInteger width;
 - (void)replaceRegion:(MTLRegion)r mipmapLevel:(NSUInteger)l withBytes:(const void *)b bytesPerRow:(NSUInteger)bpr;
 - (void)getBytes:(void *)b bytesPerRow:(NSUInteger)bpr fromRegion:(MTLRegion)r mipmapLevel:(NSUInteger)l;
@@ -551,6 +574,7 @@ MTLClearColor MTLClearColorMake(double r, double g, double b, double a);
 @end
 enum { MTLMathModeSafe = 0 };
 @protocol MTLDevice
+@property(readonly) BOOL supports32BitFloatFiltering;
 @property (readonly) NSString *name;
 - (id<MTLCommandQueue>)newCommandQueue;
 - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d;
@@ -750,7 +774,10 @@ enum { UIButtonTypeSystem = 1, UIControlStateNormal = 0, UIControlEventTouchUpIn
 - (void)makeKeyAndVisible;
 - (void)makeKeyWindow;
 @end
+typedef NSInteger UIApplicationState;
+enum {UIApplicationStateActive=0,UIApplicationStateInactive,UIApplicationStateBackground};
 @interface UIApplication : UIResponder
+@property(readonly) UIApplicationState applicationState;
 @property (class, readonly, strong) UIApplication *sharedApplication;
 @property (readonly) NSSet<UIScene *> *connectedScenes;
 @property (getter=isIdleTimerDisabled) BOOL idleTimerDisabled;

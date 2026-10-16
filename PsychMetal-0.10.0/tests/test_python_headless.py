@@ -27,7 +27,7 @@ def reject(fn, *args, message=None):
     raise AssertionError(f'{fn.__name__} accepted a call it should reject')
 
 
-assert core.version() == pm.version() == '0.9.0'
+assert core.version() == pm.version() == (root / 'VERSION').read_text().strip()
 reject(core.draw_masked_texture,1,np.zeros(14),0,message='PsychMetal is not open.')
 core.cancel_timeline()  # safe before opening
 core.cancel_timeline(False)

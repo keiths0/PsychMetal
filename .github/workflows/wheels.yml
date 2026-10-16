@@ -14,7 +14,7 @@ on:
     tags: ['v*']
 
 env:
-  PACKAGE_DIR: PsychMetal-0.9.0
+  PACKAGE_DIR: PsychMetal-0.10.0
 
 jobs:
   wheels:

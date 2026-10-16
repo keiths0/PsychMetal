@@ -7,7 +7,7 @@ case 'confirmstartup'
  if ~isempty(PMTestStartupFail)&&PMTestStartupFail,error('Synthetic startup failure');end
  varargout={[1 1 0 1 1 1;2 0 1.1 1.1 1 1;3 0 1.2 1.2 1 1]};
 case 'defaultpresentation',varargout={false};
-case 'version', varargout={'0.9.0'};
+case 'version', varargout={'0.10.0'};
 case 'open'
  PMTestOpenArgs=varargin;
  if isempty(PMTestWindow),PMTestWindow=0;end
@@ -58,7 +58,7 @@ case 'queueflip',varargout={[7 1 13]};
 case 'queueresults',varargout={[varargin{1} 2 0 7]};
 case 'queuecancel',varargout={2};
 case 'recentframes',assert(varargin{1}>=1 && varargin{1}<=256);varargout={[6 0 1.5 1.49;7 2 0 1.51]};
-case 'environment',varargout={struct('engineVersion','0.9.0','platform','scripted','osVersion','test OS','gpuName','scripted GPU','gpuAvailable',true,'debuggerAttached',false)};
+case 'environment',varargout={struct('engineVersion','0.10.0','platform','scripted','osVersion','test OS','gpuName','scripted GPU','gpuAvailable',true,'debuggerAttached',false)};
 case 'mouseevents',varargout={[1.5 1 1 10 20],0};
 case 'touchevents',varargout={[2.5 1 0 30 40],0};
 case {'prepareapp','setbackgroundcolor','close','closetexture','updatetexture','addshapes','drawtextures','kbqueuecreate'}

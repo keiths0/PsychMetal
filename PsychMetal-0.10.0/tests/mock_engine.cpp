@@ -28,6 +28,8 @@
 // encoded and rounded once. Text is a block per character (see DrawText below).
 // Other shapes, rotated textures and bilinear filtering leave the frame untouched.
 //   PM_MOCK_LINK     "LANES,GBPS"        the link LinkInfo reports. Default: unknown.
+//   PM_MOCK_INTERRUPT "N"               Control-C is pressed in the window after N flips: the
+//                    next Flip fails with PsychMetal:Interrupted, as on a Mac.
 //   PM_MOCK_KEYS     "USAGE:FROM-TO,..." HID usage USAGE reads as down in Keys while FROM <=
 //                    frames flipped since open < TO. Read at each Keys. Default: no keys.
 //   PM_MOCK_MOVIE    "WxH@FPS,FRAMES,SOUNDRATE"  the movie OpenMovie finds at any path
@@ -35,11 +37,12 @@
 //                    no sound. Its frames are those of tests/make_test_movie.mm: the top
 //                    half 16 bars, bar i white if bit i of the frame number is set; the
 //                    bottom half red k mod 256, green 255 - k mod 256, blue 64. Its sound
-//                    is a 440 Hz tone, two channels, at amplitude 0.1.
+//                    is that of the test movies too: 440 Hz at 0.2, a 1 ms click at 0.9 each second.
 // Test-only readbacks through diagnostic(): lastShapeRect holds the packed
 // RGBA of texel (row 1, column 0) of the last uploaded image, lastShapeColor
 // that of (row 0, column 1), so a transposed upload is visible to the tests.
 #include "PsychMetalEngine.h"
+#include "PsychMetalRecordingClock.h"
 #include "PsychMetalTimeline.h"
 #include "PsychMetalLiveTimeline.h"
 #include "PsychMetalKeyframes.h"
@@ -79,6 +82,7 @@ namespace {
 }
 
 pm::HostHooks hooks;
+pm::recording::Clock recordingClock;
 
 double clockNow() {
     using namespace std::chrono;
@@ -304,13 +308,17 @@ std::vector<pm::MouseEvent> mouseEventList;
 // is, moves ten pixels to the right over the next refresh, and lifts.
 std::vector<pm::TouchEvent> touchEventList;
 
+void mockRecordFrame(double aim);   // the recording section, below
+bool interruptTaken = false;        // PM_MOCK_INTERRUPT: once per open
 uint64_t present(double when) {
     double now = clockNow();
-    double target = when > now ? when : now;
+    // As the engine: a requested time within 1% of a period after a refresh is that refresh.
+    double target = when - 0.01 * ifi > now ? when - 0.01 * ifi : when > now ? when : now;
     double next = std::isfinite(gridTime) ? gridTime + std::ceil((target - gridTime) / ifi - 1e-9) * ifi : target;
     if (next <= now) next += ifi;
     while (clockNow() < next) std::this_thread::sleep_for(std::chrono::microseconds(200));
     gridTime = next;
+    mockRecordFrame(next);
     gridSamples++;
     confirmed++;
     flushTarget();
@@ -368,9 +376,11 @@ bool pm::defaultDisplayLink() noexcept { return std::getenv("PM_MOCK_DISPLAY_LIN
 const char *pm::version() noexcept { return pm::kEngineVersion; }
 void pm::prepareApp() { pm::closeSession(); prepared = true; }
 
-static bool mockDisplayLink=false;
+static bool mockDisplayLink=false,mockCaptured=true;
+static bool exportOnly=false;
 pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
-    mockDisplayLink=o.displayLink;
+    exportOnly=false;
+    mockDisplayLink=o.displayLink;mockCaptured=o.captureDisplay;
     double screenIndex = o.screenIndex;
     if (screenIndex != std::floor(screenIndex) || screenIndex < -1)
         fail("screen index must be a non-negative integer, or -1 for the last display.");
@@ -393,7 +403,7 @@ pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
     if (const char *e = getenv("PM_MOCK_MOUSE")) sscanf(e, "%d,%lf,%lf", &click, &mx, &my);
     dropEvery = 0;
     if (const char *e = getenv("PM_MOCK_DROP")) dropEvery = atoi(e);
-    clickAfter = click; dx = mx; dy = my; mouseX = display.w / 2; mouseY = display.h / 2; flips = 0;
+    clickAfter = click; dx = mx; dy = my; mouseX = display.w / 2; mouseY = display.h / 2; flips = 0; interruptTaken = false;
     ifi = 1.0 / hz; gridTime = NAN; gridSamples = 0; confirmed = 0; missing = 0; lastFlipToken = 0;
     startup.clear(); history.clear(); drawCount = 0; windowDrew.clear();
     if (o.bitDepth != 8 && o.bitDepth != 10) fail("Bit depth must be 8 or 10.");
@@ -409,8 +419,19 @@ pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
     return {display.w, display.h, ifi, display.w, display.h, session};
 }
 
+pm::OpenResult pm::openExport(uint64_t width,uint64_t height,double hz,bool rb) {
+    if(width<2||height<2||width>8192||height>8192||width*height>16777216)fail("Invalid export dimensions.");
+    if(!std::isfinite(hz)||hz<20||hz>1000)fail("refreshHz must be 20..1000.");
+    prepared=true;pm::OpenOptions o;o.refreshHz=hz;o.readback=rb;
+    auto result=pm::openSession(o);exportOnly=true;
+    display.w=width;display.h=height;
+    result.pixelWidth=result.pointWidth=width;result.pixelHeight=result.pointHeight=height;
+    return result;
+}
+
 std::vector<pm::StartupRecord> pm::startupHistory() { return startup; }
 std::vector<pm::StartupRecord> pm::confirmStartup() {
+    if(exportOnly)fail("Export has no startup.");
     requireOpen();
     if (drawCount) fail("Confirm startup before queuing stimulus drawing.");
     if (startup.empty())
@@ -434,19 +455,28 @@ void pm::closeSession() {
 // ---- presentation -------------------------------------------------------------------
 
 pm::FlipResult pm::flip(double when) {
+    if(exportOnly&&!recordingClock.active())fail("Start a virtual-clock recording before flipping an export canvas.");
     double began = clockNow();
     if (when < 0) fail("Target must be nonnegative.");
     requireOpen();
+    if (const char *e = getenv("PM_MOCK_INTERRUPT"); e && *e && flips == (uint64_t)atoll(e) && !interruptTaken) {
+        interruptTaken = true;
+        throw pm::Error(pm::kErrInterrupted, "Stopped by Control-C or Command-period in the PsychMetal window.");
+    }
     // Frames that are queued come first.
     while (lastPlanned > clockNow()) std::this_thread::sleep_for(std::chrono::microseconds(200));
     if (lastPlanned > 0 && (!std::isfinite(gridTime) || gridTime < lastPlanned)) gridTime = lastPlanned;
     double queued = clockNow();
-    uint64_t t = present(when);
+    const bool logical=recordingClock.active();
+    if(logical) when=recordingClock.beginFlip(clockNow(),when);
+    struct FinishClock { bool active; ~FinishClock(){if(active)recordingClock.finishFlip(clockNow());} } finishClock{logical};
+    uint64_t t = present(exportOnly?0:when);
     pm::FlipResult r{};
     // As the engine: flip returns before the display has reported on the frame,
     // and only flipStatus learns what became of it.
     r.time = gridTime; r.confirmed = false; r.slipRefreshes = 0; r.gridPeriod = ifi;
     r.queueMs = (queued - began) * 1000; r.returnTime = clockNow(); r.callMs = (r.returnTime - began) * 1000;
+    if(logical) { r.time=r.returnTime=recordingClock.finishFlip(clockNow());finishClock.active=false; }
     r.token = lastFlipToken = t;
     return r;
 }
@@ -465,6 +495,10 @@ pm::FlipStatus pm::flipStatus() {
     return {confirmed, dropped, reported};
 }
 pm::QueueResult pm::queueFlip(double when) {
+    if(exportOnly)fail("Export uses Flip, not queued display presentation.");
+    const bool logical=recordingClock.active();
+    if(logical) when=recordingClock.beginQueue(clockNow(),when);
+    struct FinishClock {bool active;~FinishClock(){if(active)recordingClock.finishFlip(clockNow());}} finishClock{logical};
     if(mockDisplayLink) fail("QueueFlip requires direct presentation.");
     requireOpen();
     if (!std::isfinite(when) || !(when > 0)) fail("A queued frame needs a presentation time.");
@@ -482,20 +516,23 @@ pm::QueueResult pm::queueFlip(double when) {
     targetItemBase = targetCountBase = 0;
     windowDrew.clear();
     now = clockNow();
-    double target = when > now ? when : now;
+    double target = when - 0.01 * ifi > now ? when - 0.01 * ifi : when > now ? when : now;
     double planned = std::isfinite(gridTime) ? gridTime + std::ceil((target - gridTime) / ifi - 1e-9) * ifi : target;
     if (planned <= lastPlanned + 0.5 * ifi) planned = lastPlanned + ifi;
     if (planned <= now) planned += ifi;
     lastPlanned = planned;
+    mockRecordFrame(planned);
     queued.push_back({t, when, planned, 0, false});
     pm::FrameRecord r{};
     r.token = t; r.projected = planned; r.presented = planned; r.status = 0; r.scheduledAt = now;
     r.callback = planned; r.requestedTime = when; r.presentRequest = planned - 0.5 * ifi; r.committedAt = now;
     history.push_back(r);
     confirmed++; flips++;
+    if(logical) recordingClock.rememberQueued(t);
     return {t, waiting(), queueCapacity()};
 }
 std::vector<pm::QueuedFrame> pm::queueResults(bool wait) {
+    pm::recording::Sequence sequenceClock(recordingClock,clockNow);
     requireOpen();
     if (wait)
         while (lastPlanned > clockNow()) std::this_thread::sleep_for(std::chrono::microseconds(200));
@@ -1009,13 +1046,15 @@ pm::KbCheck pm::kbQueueCheck() {
 
 // ---- time, diagnostics -------------------------------------------------------------------
 
-double pm::now() noexcept { return clockNow(); }
+double pm::now() noexcept { return recordingClock.now(clockNow()); }
 double pm::waitUntil(double deadline) {
+    if(exportOnly && recordingClock.active())return recordingClock.advanceWait(deadline,clockNow());
+    deadline=recordingClock.deadline(deadline,clockNow());
     // Sleep, then spin the last 2 ms, as the engine does, so the wait-precision
     // checks in the inventory tests mean the same thing here as on a Mac.
     while (deadline - clockNow() > 0.002) std::this_thread::sleep_for(std::chrono::microseconds(200));
     while (clockNow() < deadline) {}
-    return clockNow();
+    return pm::now();
 }
 pm::DiagnosticReport pm::diagnostic() {
     pm::DiagnosticReport r{};
@@ -1024,7 +1063,7 @@ pm::DiagnosticReport pm::diagnostic() {
     d.confirmedPresentations = (double)confirmed;
     d.missingPresentedTimes = (double)missing;
     d.renderWidth = display.w; d.renderHeight = display.h; d.drawableCount = 3;
-    d.readbackEnabled = readable;
+    d.readbackEnabled = readable;d.displayCaptured=!exportOnly&&mockCaptured;
     d.measuredRefreshHz = 1.0 / ifi; d.gridSamples = (double)gridSamples;
     d.shapesAppended = (double)shapesAppended; d.shapesEncoded = (double)shapesEncoded;
     d.texturesCreated = (double)texturesMade; d.texturesDrawn = (double)texturesDrawn;
@@ -1115,6 +1154,7 @@ pm::TimelineResult pm::playTimeline(uint64_t frames,const pm::ArrayView &tracks,
         program.push_back({index,parameter,kind,period,amplitude,offset});
     }
     auto scene=drawItems;size_t count=drawCount;
+    pm::recording::Sequence sequenceClock(recordingClock,clockNow);
     pm::TimelineResult result{};result.expectedRefreshHz=1/ifi;
     pm::timeline::Presentations shown;shown.period=ifi;
     std::vector<std::array<double,4>> bounds(scene.size());std::vector<bool> enabled(scene.size());
@@ -1150,10 +1190,15 @@ pm::TimelineResult pm::playTimeline(uint64_t frames,const pm::ArrayView &tracks,
 // A scripted movie (PM_MOCK_MOVIE): the frame table, the frames' pixels and the
 // sound are made up; the front ends' arithmetic and the engine's checks are real.
 namespace {
-struct MockMovie { pm::MovieInfo info; double fps = 30; };
+struct MockMovie { pm::MovieInfo info; double fps = 30; std::vector<double> times; bool silent = false; };
+struct MockRecording { std::string path, codec; double scale = 1; bool sound = false, virtualClock = false; double first = NAN; int64_t lastTick = -1; std::vector<int64_t> ticks; };
+std::unique_ptr<MockRecording> mockRecorder;
+std::map<std::string, std::vector<int64_t>> mockRecorded;
+std::map<std::string,double> mockRecordedDuration;
+std::set<std::string> mockRecordedSound;      // recorded with a sound track: silence here
 std::map<uint64_t, MockMovie> mockMovies;
 uint64_t nextMovie = 1;
-void clearMockMovies() { mockMovies.clear(); }
+void clearMockMovies();
 MockMovie &mockMovie(uint64_t h) {
     auto it = mockMovies.find(h);
     if (it == mockMovies.end()) fail("Unknown or closed movie handle.");
@@ -1224,13 +1269,41 @@ uint64_t pm::openMovie(const std::string &path, pm::MovieInfo &info) {
     m.info.duration = frames / fps; m.info.constantRate = true;
     m.info.soundChannels = rate > 0 ? 2 : 0; m.info.soundRate = rate > 0 ? rate : 0;
     m.info.codec = "mock";
+    if (auto recorded = mockRecorded.find(path); recorded != mockRecorded.end() && !(getenv("PM_MOCK_MOVIE") && *getenv("PM_MOCK_MOVIE"))) {
+        // A movie recorded in this process: its frames at their refreshes, at the window's size, no sound.
+        const auto &ticks = recorded->second;
+        m.info.width = display.w; m.info.height = display.h; m.info.frames = (double)ticks.size();
+        for (int64_t t : ticks) m.times.push_back((double)t * ifi);
+        m.info.duration = mockRecordedDuration.count(path)?mockRecordedDuration[path]:(double)(ticks.back()+1)*ifi;
+        m.info.frameRate = m.info.frames / m.info.duration;
+        m.fps = m.info.frameRate;
+        m.info.constantRate = ticks.back() + 1 == (int64_t)ticks.size();
+        const bool sound = mockRecordedSound.count(path) > 0;
+        m.info.soundChannels = sound ? 2 : 0;
+        m.info.soundRate = sound ? 48000 : 0;
+        m.silent = sound;
+    }
     info = m.info;
     uint64_t handle = nextMovie++;
     mockMovies[handle] = m;
     return handle;
 }
+uint64_t pm::transcodeMovie(const std::string &source,const std::string &destination,const std::string &codec) {
+    if(source==destination || (codec!="h264"&&codec!="hevc"&&codec!="prores4444"&&codec!="prores422")) fail("Invalid movie conversion.");
+    if(source.empty()||source.find("missing")!=std::string::npos)fail("Source movie is missing.");
+    int w=160,h=96,frames=90;double fps=30,rate=48000;
+    if(const char *e=getenv("PM_MOCK_MOVIE"))sscanf(e,"%dx%d@%lf,%d,%lf",&w,&h,&fps,&frames,&rate);
+    return (uint64_t)frames; // standalone operation: no display/session required
+}
+uint64_t pm::prepareMovie(uint64_t movie,uint32_t frames,uint64_t maxBytes) {
+    const auto &m=mockMovie(movie);
+    const uint64_t n=frames?std::min<uint64_t>(frames,m.info.frames):(uint64_t)m.info.frames;
+    if(frames>256 || maxBytes<16 || maxBytes>2147483648ull || n>maxBytes/(uint64_t)(m.info.width*m.info.height*4)) fail("Invalid movie buffer request.");
+    return n;
+}
 std::vector<double> pm::movieFrameTimes(uint64_t movie) {
     const MockMovie &m = mockMovie(movie);
+    if (!m.times.empty()) return m.times;
     std::vector<double> out((size_t)m.info.frames);
     for (size_t k = 0; k < out.size(); k++) out[k] = (double)k / m.fps;
     return out;
@@ -1252,7 +1325,12 @@ std::vector<float> pm::movieSound(uint64_t movie, double rate, double speed, boo
     const double decoded = rate / speed, toneRate = keepPitch ? rate : decoded;
     const size_t n = (size_t)std::llround(m.info.duration * decoded);
     std::vector<float> out(n * 2);
-    for (size_t i = 0; i < n; i++) out[2 * i] = out[2 * i + 1] = (float)(.1 * std::sin(2 * M_PI * 440 * (double)i / toneRate));
+    // As tests/make_test_movie.mm: 440 Hz at 0.2, and a 1 ms click at 0.9 starting each second.
+    if (!m.silent)
+        for (size_t i = 0; i < n; i++) {
+            const double t = (double)i / toneRate;
+            out[2 * i] = out[2 * i + 1] = t - std::floor(t) < .001 ? .9f : (float)(.2 * std::sin(2 * M_PI * 440 * t));
+        }
     return out;
 }
 pm::MovieResult pm::playMovie(uint64_t movie, uint64_t first, uint64_t count, uint32_t refreshes,
@@ -1265,11 +1343,12 @@ pm::MovieResult pm::playMovie(uint64_t movie, uint64_t first, uint64_t count, ui
     checkMockMovieDraw(m, first, src, dst, 0, {1, 1, 1, 1}, 1);
     if (drawCount) fail("PlayMovie draws each frame itself; flip or clear what is queued first.");
     if (!std::isnan(when) && !(std::isfinite(when) && when >= 0)) fail("when must be a GetSecs time, or NaN.");
+    pm::recording::Sequence sequenceClock(recordingClock,clockNow);
     pm::MovieResult result{};
     result.expectedRefreshHz = 1 / ifi;
-    const double earliest = clockNow() + 3 * ifi;
+    const double earliest = pm::now() + 3 * ifi;
     const double aim = std::isnan(when) ? earliest : std::max(when, earliest);
-    result.start = std::isfinite(pm::nextRefresh(aim)) ? pm::nextRefresh(aim) : aim;
+    result.start = recordingClock.active()?recordingClock.align(aim):std::isfinite(pm::nextRefresh(aim)) ? pm::nextRefresh(aim) : aim;
     if (sound) result.voice = pm::play(sound, result.start, 0, 0, gain, 1);
     pm::timeline::Presentations shown; shown.period = ifi;
     try {
@@ -1295,6 +1374,73 @@ pm::MovieResult pm::playMovie(uint64_t movie, uint64_t first, uint64_t count, ui
     result.longestIntervalMs = shown.longest * 1000;
     if (!result.submitted) result.firstPresented = NAN;
     return result;
+}
+// Recording: what was recorded is remembered by path, and OpenMovie of that path
+// gives a movie of those frames, each carrying its number in the test movies'
+// pattern, at the refreshes they were aimed at. No file is written.
+namespace {
+void mockRecordFrame(double aim) {
+    if (!mockRecorder) return;
+    MockRecording &r = *mockRecorder;
+    if(r.virtualClock) aim=pm::now();
+    if (!std::isfinite(r.first)) r.first = aim;
+    int64_t tick = (int64_t)std::llround((aim - r.first) / ifi);
+    if (tick <= r.lastTick) tick = r.lastTick + 1;
+    r.lastTick = tick;
+    r.ticks.push_back(tick);
+}
+}  // namespace
+void pm::startMovieRecording(const std::string &path, const std::string &codec, double scale, bool sound, bool virtualClock) {
+    if(exportOnly&&!virtualClock)fail("Export requires clock=virtual.");
+    requireOpen();
+    if (mockRecorder) fail("A movie is already being recorded; StopMovieRecording first.");
+    if (!(scale >= 0.05 && scale <= 1)) fail("scale must be 0.05 to 1.");
+    if (codec != "prores4444" && codec != "prores422" && codec != "hevc" && codec != "h264")
+        fail("codec must be prores4444, prores422, hevc or h264.");
+    auto ext = path.size() > 4 ? path.substr(path.size() - 4) : std::string();
+    for (char &c : ext) c = (char)std::tolower((unsigned char)c);
+    if (ext != ".mov" && ext != ".mp4" && ext != ".m4v") fail("The movie file must end in .mov, .mp4 or .m4v.");
+    if (codec.rfind("prores", 0) == 0 && ext != ".mov") fail("ProRes is written to a .mov file.");
+    if(virtualClock && sound && pm::audioStatus().voices) fail("Stop existing sounds before virtual-clock recording.");
+    mockRecorder = std::make_unique<MockRecording>();
+    mockRecorder->path = path; mockRecorder->codec = codec; mockRecorder->scale = scale;
+    mockRecorder->sound = sound && pm::audioStatus().open;
+    mockRecorder->virtualClock=virtualClock;
+    if(virtualClock) {recordingClock.begin(clockNow(),ifi);if(exportOnly)recordingClock.beginSequence(clockNow());}
+}
+namespace {
+// Close finishes a recording, as on a Mac.
+void clearMockMovies() {
+    mockMovies.clear();
+    if (mockRecorder && !mockRecorder->ticks.empty()) {
+        mockRecorded[mockRecorder->path] = mockRecorder->ticks;
+        const double stopped=mockRecorder->virtualClock?pm::now():NAN;
+        mockRecordedDuration[mockRecorder->path]=pm::recording::endingTick(stopped,mockRecorder->first,mockRecorder->lastTick,ifi)*ifi;
+    }
+    mockRecorder.reset();
+    recordingClock.end();
+}
+}  // namespace
+pm::MovieRecording pm::stopMovieRecording() {
+    if (!mockRecorder) fail("No movie is being recorded.");
+    std::unique_ptr<MockRecording> r = std::move(mockRecorder);
+    const double logicalStop=r->virtualClock?pm::now():NAN;
+    recordingClock.end();
+    if (r->ticks.empty()) fail("No frames were presented while recording; no movie was written.");
+    pm::MovieRecording out;
+    out.path = r->path; out.codec = r->codec; out.virtualClock=r->virtualClock;
+    out.width = std::max(2.0, std::round(display.w * r->scale / 2) * 2);
+    out.height = std::max(2.0, std::round(display.h * r->scale / 2) * 2);
+    out.frames = (double)r->ticks.size();
+    out.refreshes = (double)pm::recording::endingTick(logicalStop,r->first,r->lastTick,ifi);
+    out.refreshHz = 1 / ifi;
+    out.duration = out.refreshes * ifi;
+    out.sound = r->sound;                         // the scripted output plays to the movie as it would on a Mac
+    out.soundSeconds = r->sound ? out.duration : 0;
+    mockRecorded[r->path] = r->ticks;
+    mockRecordedDuration[r->path]=out.duration;
+    if (r->sound) mockRecordedSound.insert(r->path); else mockRecordedSound.erase(r->path);
+    return out;
 }
 void pm::closeMovie(uint64_t movie) {
     if (!mockMovies.erase(movie)) fail("Unknown or closed movie handle.");
@@ -1371,6 +1517,7 @@ std::vector<pm::AudioDevice> pm::audioDevices() {
             {72, "Scripted Microphone", "built-in", 0, 1, 48000, false, true}};
 }
 pm::AudioInfo pm::openAudio(const pm::AudioOptions &o) {
+    if(recordingClock.active()) fail("Open audio before virtual-clock recording.");
     if (mockAudio) fail("Audio is already open. Close it first.");
     if (o.channels < 1 || o.channels > 2) fail("The output device has 2 channels.");
     if (o.inputChannels != 1) fail("The input device has 1 channels.");
@@ -1391,7 +1538,12 @@ pm::AudioInfo pm::openAudio(const pm::AudioOptions &o) {
     if (const char *g = std::getenv("PM_MOCK_AUDIO_GAP"); g && *g) m->gapAfter = std::atof(g);
     MockAudio *lostOf = m.get();
     pm::audio::Platform platform;
-    platform.frameProjected = [](uint64_t token) { auto r = historyFor(token); return r ? r->projected : NAN; };
+    platform.outputTime=[](double when) {
+        const double wall=clockNow();
+        return recordingClock.active()?wall+when-recordingClock.now(wall):when;
+    };
+    platform.framePhysical = [](uint64_t token) {auto r=historyFor(token);return r?r->projected:NAN;};
+    platform.frameProjected = [](uint64_t token) {if(recordingClock.active())return recordingClock.queuedTime(token);auto r = historyFor(token); return r ? r->projected : NAN; };
     platform.framePresented = [](uint64_t token) {
         auto r = historyFor(token);
         return (r && r->status == 0 && r->presented > 0) ? r->presented : NAN;

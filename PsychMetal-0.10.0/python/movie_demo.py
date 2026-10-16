@@ -55,7 +55,7 @@ def movie_demo(path=None, sound='auto'):
         if not info['constantRate']:
             print('The frames are not evenly spaced in time; each is still shown for the same number of refreshes.')
         W, H = rect[2], rect[3]
-        scale = min(1, .8 * W / info['width'], .7 * H / info['height'])
+        scale = min(.8 * W / info['width'], .7 * H / info['height'])
         mw, mh = info['width'] * scale, info['height'] * scale
         box = [(W - mw) / 2, (H - mh) / 2, (W + mw) / 2, (H + mh) / 2]
 

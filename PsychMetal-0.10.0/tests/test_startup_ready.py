@@ -17,6 +17,7 @@ int confirmedCount=9,missingPresentedCount=9,pendingSlipRefreshes=5;
 double now=0;Record current{};std::vector<Record> startupRecords;std::vector<int> sequence;
 [[noreturn]]void fail(const char*s){throw std::runtime_error(s);}
 double CACurrentMediaTime(){return now+=.001;}
+int pthread_main_np(){return 0;}void settleAppKit(double){}
 void pthread_mutex_lock(int*){assert(!locked);locked=true;}
 void pthread_mutex_unlock(int*){assert(locked);locked=false;}
 int waitRelative(double){now=3;return ETIMEDOUT;}
@@ -34,7 +35,7 @@ int main(){
  reset();sequence={1,0,1,0,0};confirmStartup();assert(startupReady&&startupRecords.size()==5&&firstSessionToken==6&&prefetchStarts==1);
  assert(confirmedCount==0&&missingPresentedCount==0&&pendingSlipRefreshes==0&&lastSlipToken==99);
  confirmStartup();assert(startupRecords.size()==5&&nextToken==6);
- reset();bool failed=false;try{confirmStartup();}catch(...){failed=true;}assert(failed&&startupRecords.size()==12&&!locked&&!startupReady);
+ reset();bool failed=false;try{confirmStartup();}catch(...){failed=true;}assert(failed&&startupRecords.size()==120&&!locked&&!startupReady);
  assert(prefetchStarts==1);   // only a confirmed startup turns prefetch on
  reset();timeout=true;failed=false;try{confirmStartup();}catch(...){failed=true;}assert(failed&&startupRecords.size()==1&&!locked);
  reset();sequence={3};failed=false;try{confirmStartup();}catch(...){failed=true;}assert(failed&&startupRecords.size()==1&&!locked);

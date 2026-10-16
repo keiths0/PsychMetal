@@ -1,4 +1,4 @@
-// PsychMetalEngine 0.9.0 — direct Metal presentation. No OpenGL.
+// PsychMetalEngine 0.10.0 — direct Metal presentation. No OpenGL.
 // SPDX-License-Identifier: MIT
 //
 // The host-neutral engine behind PsychMetalEngine.h: presentation, timing,
@@ -15,6 +15,8 @@
 #include "PsychMetalEngine.h"
 #include "PsychMetalInternal.h"
 #include "PsychMetalReadback.h"
+#include "PsychMetalRecordingClock.h"
+static pm::recording::Clock recordingClock;
 #include "PsychMetalTimeline.h"
 #include "PsychMetalLiveTimeline.h"
 #include "PsychMetalKeyframes.h"
@@ -117,6 +119,8 @@ static double pendingSlipRefreshes;           // reported with the NEXT flip
 // the order of Apple's own frame loop, where the display link hands over the
 // drawable first and input is read after.
 static bool prefetchDrawable;
+static bool exportSession=false;
+static id<MTLTexture> exportTexture=nil;
 static id<CAMetalDrawable> heldDrawable;
 // Pipelines by what they draw into and how they blend. PM_TARGET_FLOAT is the
 // linearization target and PM_TARGET_OFFSCREEN an offscreen window: both are
@@ -171,6 +175,7 @@ struct PMTextureResource {
     id<MTLTexture> texture;
     size_t width, height, channels;
     bool bytes;             // 8-bit normalised storage (uint8, logical images); else half float
+    bool fullFloat = false, gpuOnly = false;
     bool offscreen = false; // an offscreen window: a render target, never uploaded to, holding colour x alpha
     id keep = nil;          // a movie frame: the CVMetalTexture and the sample whose pixel buffer the GPU reads
     id keepSample = nil;
@@ -231,6 +236,10 @@ static bool displayCaptured = false;     // CGDisplayCapture holds the display w
 static Record rec[NREC];
 static bool closing = true;
 static std::atomic<bool> timelineCancellation{false};
+// Control-C or Command-period in the PsychMetal window: the next Flip, QueueFlip or
+// key check stops the program (kErrInterrupted), whatever it checks for itself,
+// and a playing timeline or movie ends at once.
+static std::atomic<bool> interruptRequested{false};
 static pm::timeline::LiveState liveTimeline;
 // Another application has secure keyboard entry on (a password field, a
 // terminal's Secure Keyboard Entry): keys do not reach this one. Carbon's call,
@@ -260,6 +269,7 @@ static uint64_t captureToken;
 
 static double gridFirstPresented, gridLastPresented, measuredIFI;
 static double lastProjected;
+static double lastTimedTarget = NAN;    // the refresh the last frame given a presentation time was aimed at
 static int64_t gridFirstFrame, gridLastFrame;
 static uint64_t gridSamples, directNoDrawableCount;
 static double percentileOf(const double *src, int n, double frac);
@@ -301,6 +311,8 @@ static void stopKeyTap(void);
 static void stopMouseTap(void);
 static void iosOpenWindow(NSUInteger w, NSUInteger h, double hz, NSUInteger drawableCount, bool readable, bool linked);
 static void iosCloseWindow(void);
+static void iosOpenExport(void);
+static void iosCloseExport(void);
 static void iosRequireFront(void);
 #else
 // Virtual key code to HID usage; 0 where there is none.
@@ -680,6 +692,9 @@ static void releaseKeyboardQueue() {
 static int waitRelative(double endTime);
 static void closeCore(void);
 static void closeMovies(void);
+static void closeRecording(void);
+static void recordFrame(id<MTLCommandBuffer> cb, id<MTLTexture> out, uint64_t token);
+static void recordAim(uint64_t token, double aim);
 static void stopPresenter(void);
 static void notePipelineSample(Record *q);
 static void prepareApp(void);
@@ -731,10 +746,11 @@ static void encodeItems(id<MTLRenderCommandEncoder> re, id<MTLCommandBuffer> cb,
 
     float size[2] = {(float)width, (float)height};
 
-    size_t textureCount=0, polygonPoints=0;
+    size_t textureCount=0, polygonPoints=0, shaderCount=0;
     bool hasShapes=false;
     for (NSUInteger i=0;i<n;i++) {
         textureCount += (refs[i] ? 1 : 0) + (coverageRefs[i] ? 1 : 0);
+        shaderCount += shaderRefs[i] ? 1 : 0;
         hasShapes |= items[i].type==PM_ITEM_SHAPE;
         if (polygonRefs[i]) polygonPoints += polygonRefs[i]->size() / 2;
     }
@@ -755,10 +771,8 @@ static void encodeItems(id<MTLRenderCommandEncoder> re, id<MTLCommandBuffer> cb,
             pthread_cond_broadcast(&cond); pthread_mutex_unlock(&lock);
         }];
     }
-    bool hasCustom=false;
-    for(NSUInteger i=0;i<n;i++) hasCustom|=bool(shaderRefs[i]);
-    if(hasCustom) {
-        auto retained=std::make_shared<std::vector<PMShaderRef>>();retained->reserve(n);
+    if(shaderCount) {
+        auto retained=std::make_shared<std::vector<PMShaderRef>>();retained->reserve(shaderCount);
         for(NSUInteger i=0;i<n;i++)if(shaderRefs[i])retained->push_back(shaderRefs[i]);
         [cb addCompletedHandler:^(id<MTLCommandBuffer>){retained->clear();}];
     }
@@ -1047,6 +1061,7 @@ static bool encodeFrame(id<MTLCommandBuffer> cb, id<MTLTexture> out, uint64_t to
         [ee drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [ee endEncoding];
     }
+    recordFrame(cb, out, token);         // a movie being recorded gets the finished frame
     if (captureBuffer) {
         // The frame is presented whether or not it could be copied. Without a
         // copy captureToken stays behind, and GetImage refuses to answer.
@@ -1211,15 +1226,46 @@ static int textureSlot(uint64_t handle) {
 }
 static std::vector<__fp16> uploadScratch;
 static std::vector<uint8_t> byteScratch;
+static std::vector<float> singleScratch;
 // Validation and packing live in PsychMetalShared.cpp, so they are shared by
 // every front end and testable without a GPU. uint8 and logical images are
-// stored in 8-bit textures as they are; float images as half floats.
-static void uploadTexture(int slot,const pm::ArrayView &image) {
+// stored in 8-bit textures as they are. Float32 uses direct 32-bit storage when
+// filtering is supported; otherwise float uploads use the half-float path.
+// Private textures are uploaded through a temporary shared surface. In-place
+// partial writes use the same path only after all readers have drained.
+static void writeTexture(const PMTextureRef &resource, const void *texels, size_t w,size_t h,size_t pitch,size_t x=0,size_t y=0) {
+    if(!resource->gpuOnly) {
+        [resource->texture replaceRegion:MTLRegionMake2D(x,y,w,h) mipmapLevel:0 withBytes:texels bytesPerRow:pitch];
+        return;
+    }
+    auto td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:resource->texture.pixelFormat width:w height:h mipmapped:NO];
+    td.storageMode=MTLStorageModeShared;td.usage=MTLTextureUsageShaderRead;
+    id<MTLTexture> staging=[device newTextureWithDescriptor:td];
+    if(!staging) fail("Could not allocate texture upload staging surface.");
+    [staging replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0 withBytes:texels bytesPerRow:pitch];
+    auto cb=[queue commandBuffer];auto blit=[cb blitCommandEncoder];
+    if(!cb||!blit) fail("Could not encode the texture upload.");
+    [blit copyFromTexture:staging sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
+        sourceSize:MTLSizeMake(w,h,1) toTexture:resource->texture destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x,y,0)];
+    [blit endEncoding];
+    auto finished=dispatch_semaphore_create(0);
+    [cb addCompletedHandler:^(id<MTLCommandBuffer>){dispatch_semaphore_signal(finished);}];
+    [cb commit];
+    const bool timedOut=dispatch_semaphore_wait(finished,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC))!=0;
+    if(timedOut||cb.status!=MTLCommandBufferStatusCompleted) {
+        pthread_mutex_lock(&lock);asynchronousGpuFailure=true;pthread_mutex_unlock(&lock);
+        fail(timedOut?"Texture upload timed out; Close the session.":"The GPU failed to upload the texture; Close the session.");
+    }
+}
+
+static void uploadTexture(int slot,const pm::ArrayView &image,bool gpuOnly=false) {
     double began=CACurrentMediaTime();
     const bool bytes=pm::internal::isByteImage(image);
+    const bool fullFloat=image.type==pm::ScalarType::Float32 && device.supports32BitFloatFiltering;
     pm::internal::ImageShape shape;
     const void *texels;
     if(bytes) texels=pm::internal::packBytes(image,byteScratch,shape);
+    else if(fullFloat) texels=pm::internal::packSingles(image,singleScratch,shape);
     else { shape=pm::internal::packImage(image,uploadScratch); texels=uploadScratch.data(); }
     size_t h=shape.height,w=shape.width,c=shape.channels;
     auto &pool=texturePools[slot];
@@ -1228,7 +1274,7 @@ static void uploadTexture(int slot,const pm::ArrayView &image) {
         long owners=candidate.use_count();
         long idleOwners=userTextures[slot]==candidate ? 2 : 1;
         if(owners==idleOwners && candidate->width==w && candidate->height==h && candidate->channels==c &&
-           candidate->bytes==bytes) {
+           candidate->bytes==bytes && candidate->fullFloat==fullFloat && candidate->gpuOnly==gpuOnly) {
             resource=candidate; break;
         }
     }
@@ -1250,23 +1296,25 @@ static void uploadTexture(int slot,const pm::ArrayView &image) {
             if(pool.size()>=4) fail("Texture update pool is busy; Flip before updating this texture again.");
         }
         MTLPixelFormat format=bytes ? (c==1?MTLPixelFormatR8Unorm:MTLPixelFormatRGBA8Unorm)
-                                    : (c==1?MTLPixelFormatR16Float:MTLPixelFormatRGBA16Float);
+                                    : fullFloat ? (c==1?MTLPixelFormatR32Float:MTLPixelFormatRGBA32Float)
+                                                : (c==1?MTLPixelFormatR16Float:MTLPixelFormatRGBA16Float);
         MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
             width:w height:h mipmapped:NO];
-        td.usage=MTLTextureUsageShaderRead; td.storageMode=MTLStorageModeShared;
+        td.usage=MTLTextureUsageShaderRead; td.storageMode=gpuOnly?MTLStorageModePrivate:MTLStorageModeShared;
         id<MTLTexture> texture=[device newTextureWithDescriptor:td];
         if(!texture) fail("Could not allocate Metal texture.");
         resource=std::make_shared<PMTextureResource>();
         resource->texture=texture; resource->width=w; resource->height=h; resource->channels=c;
-        resource->bytes=bytes;
+        resource->bytes=bytes;resource->fullFloat=fullFloat;resource->gpuOnly=gpuOnly;
         pool.push_back(resource); textureAllocations++;
     }
-    [resource->texture replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0
-        withBytes:texels bytesPerRow:w*(c==1?1:4)*(bytes?sizeof(uint8_t):sizeof(__fp16))];
+    writeTexture(resource,texels,w,h,w*(c==1?1:4)*(bytes?1:fullFloat?4:2));
     userTextures[slot]=resource; cpuUploadMs=(CACurrentMediaTime()-began)*1000;
 }
 // Invalidate the session before new records may be allocated. The graphics MEX stays pinned.
 static void closeCore(void) {
+    interruptRequested.store(false);     // a stop asked for is spent once the window closes
+    closeRecording();
     closeMovies();
     stopDisplayDriver();
     releaseKeyboardQueue();
@@ -1291,7 +1339,7 @@ static void closeCore(void) {
     pthread_mutex_unlock(&lock);
     if(!drained) hookWarn(pm::kWarnDrainTimeout, "Close timed out waiting for callbacks; old callbacks have been isolated.");
 #if PM_IOS
-    iosCloseWindow();
+    if(exportSession) iosCloseExport();else iosCloseWindow();
 #else
     if (metalWindow) {
         NSWindow *closingWindow = metalWindow;
@@ -1341,6 +1389,7 @@ static void closeCore(void) {
     unkeptMask = PMMask{};
     std::vector<__fp16>().swap(uploadScratch);
     std::vector<uint8_t>().swap(byteScratch);
+    std::vector<float>().swap(singleScratch);
     linearSampler = nil;
     nearestSampler = nil;
     for (int i = 0; i < PM_MAX_TEXTURES; i++)
@@ -1354,7 +1403,7 @@ static void closeCore(void) {
     memset(&lastShape, 0, sizeof(lastShape));
     queue = nil;
     device = nil;
-    layer = nil;
+    layer = nil;exportTexture=nil;exportSession=false;
 }
 static void prepareApp(void) {
     closeCore();
@@ -1389,9 +1438,26 @@ static void prepareApp(void) {
 static std::mutex trackpadLock;             // guards touchRing and trackpadFinger
 static id trackpadFinger[PM_FINGERS];       // the identity of the contact that is finger k + 1
 static bool trackpadListening;              // the view has been told to take contacts
+// Control-C or Command-period, the Mac's own "stop": noted, whoever the event reaches.
+static bool noteInterrupt(NSEvent *event) {
+    if (event.type != NSEventTypeKeyDown) return false;
+    const NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    NSString *key = event.charactersIgnoringModifiers.lowercaseString;
+    const bool chord = ((flags & NSEventModifierFlagControl) && [key isEqualToString:@"c"]) ||
+                       ((flags & NSEventModifierFlagCommand) && [key isEqualToString:@"."]);
+    if (!chord) return false;
+    interruptRequested.store(true);
+    timelineCancellation.store(true);
+    return true;
+}
 @interface PMTouchView : NSView
 @end
 @implementation PMTouchView
+// Key events come to the view (where the host's own loop delivers them) and stop
+// here, apart from the stop chord: nothing beeps.
+- (BOOL)acceptsFirstResponder { return YES; }
+- (void)keyDown:(NSEvent *)event { noteInterrupt(event); }
+- (BOOL)performKeyEquivalent:(NSEvent *)event { return noteInterrupt(event) || [super performKeyEquivalent:event]; }
 - (void)note:(NSEvent *)event matching:(NSTouchPhase)matching phase:(int)phase {
     std::lock_guard<std::mutex> guard(trackpadLock);
     for (NSTouch *touch in [event touchesMatchingPhase:matching inView:self]) {
@@ -1428,15 +1494,34 @@ static void deliverAppKitEvents(NSDate *until) {
         NSEventType t = event.type;
         if (t != NSEventTypeKeyDown && t != NSEventTypeKeyUp && t != NSEventTypeFlagsChanged)
             [app sendEvent:event];
+        else
+            noteInterrupt(event);
         until = [NSDate distantPast];   // drain what is queued, then return
     }
 }
 
-// Let AppKit work on the main thread for a fixed time. A fixed time, not until
-// AppKit says the window is visible: for a program started from a terminal it
-// never does (occlusion stays "not visible" while the window is plainly up), and
-// Open built that way never confirmed its first frame on macOS 26. One second is
-// what 0.8.1 waited, and it works.
+// On the main thread, where nothing else may be taking the application's events (a
+// program run from a terminal, flipping in a loop), the key events waiting are taken
+// and looked at for the stop chord. Key events are never delivered anyway.
+static void pollInterrupt(void) {
+    if (!pthread_main_np() || !metalWindow) return;
+    // At most ten times a second: asking AppKit for events can let it do other work
+    // on this thread, which a frame loop should not pay for on every frame.
+    static double lastPoll = 0;
+    const double now = CACurrentMediaTime();
+    if (now - lastPoll < 0.1) return;
+    lastPoll = now;
+    @autoreleasepool {
+        NSApplication *app = [NSApplication sharedApplication];
+        for (NSEvent *event; (event = [app nextEventMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged
+                                                       untilDate:[NSDate distantPast] inMode:NSDefaultRunLoopMode dequeue:YES]); )
+            noteInterrupt(event);
+    }
+}
+
+// Pump AppKit's default run-loop mode for a bounded slice. Startup uses brief
+// slices while waiting for real presentation confirmations, not occlusion flags
+// (terminal-launched hosts can report invisible even when the window is onscreen).
 static void settleAppKit(double seconds) {
     onMainSync(^{
         NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:seconds];
@@ -1445,7 +1530,16 @@ static void settleAppKit(double seconds) {
                                 beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     });
 }
+#else
+static void pollInterrupt(void) {}      // the phone stops with three fingers, which the program reads
 #endif
+// The stop chord, taken: a program that never looks for it is stopped at its next
+// Flip, QueueFlip or key check, and its own cleanup closes the window.
+static void throwIfInterrupted(void) {
+    pollInterrupt();
+    if (interruptRequested.exchange(false))
+        failWith(pm::kErrInterrupted, "Stopped by Control-C or Command-period in the PsychMetal window.");
+}
 // A pipeline for one pair of shader functions, one target format and one way of
 // blending (pm::internal::blendFor, which says what each mode does).
 static_assert(MTLBlendFactorZero == 0 && MTLBlendFactorOne == 1 && MTLBlendFactorSourceAlpha == 4 &&
@@ -1541,14 +1635,15 @@ static id<MTLSamplerState> makeSampler(MTLSamplerMinMagFilter filter) {
 static void openCore(NSUInteger w, NSUInteger h, double period,
                      NSInteger screenIndex, double globalLeft, double globalTop, double globalRight,
                      double globalBottom, NSUInteger drawableCount,
-                     bool readable, int bits, bool linked, uint32_t requestedDisplay) {
-    if (!appPrepared)
+                     bool readable, int bits, bool linked, uint32_t requestedDisplay, bool standalone=false,bool capture=true) {
+    if (!standalone && !appPrepared)
         fail("PrepareApp must be called before Open.");
     if (metalWindow || device)
         fail("PsychMetal native resources are already open.");
     if(!graphicsLocked) { hookPin(); graphicsLocked=true; }
     pthread_mutex_lock(&lock); ++sessionEpoch; pthread_mutex_unlock(&lock);
     startupRecords.clear();startupReady=false;prefetchDrawable=false;heldDrawable=nil;
+    exportSession=standalone;
     requestedDrawableCount = drawableCount;
     outputBits = bits;
     drawableFormat = bits == 10 ? MTLPixelFormatBGR10A2Unorm : MTLPixelFormatBGRA8Unorm;
@@ -1559,7 +1654,11 @@ static void openCore(NSUInteger w, NSUInteger h, double period,
     if (!queue)
         failOpen(pm::kErrMetal, @"Could not create a Metal command queue.");
 #if PM_IOS
-    (void)screenIndex; (void)globalLeft; (void)globalTop; (void)globalRight; (void)globalBottom; (void)requestedDisplay;
+    if(standalone) iosOpenExport();
+#endif
+    if(!standalone) {
+#if PM_IOS
+    (void)capture; (void)screenIndex; (void)globalLeft; (void)globalTop; (void)globalRight; (void)globalBottom; (void)requestedDisplay;
     iosOpenWindow(w, h, 1.0 / period, drawableCount, readable, linked);
 #else
     (void)linked; (void)screenIndex; (void)globalLeft; (void)globalTop;
@@ -1584,7 +1683,7 @@ static void openCore(NSUInteger w, NSUInteger h, double period,
         // The display is captured for the window, as in 0.8.1: the compositor's
         // way out of the path. (Its removal was tried for 0.9.0 and not measured;
         // it stays until the tear test and compositor probe say it can go.)
-        displayCaptured = CGDisplayCapture(selectedDisplayID) == kCGErrorSuccess;
+        displayCaptured = capture && CGDisplayCapture(selectedDisplayID) == kCGErrorSuccess;
         metalWindow = [[NSWindow alloc] initWithContentRect:screen.frame
                                                   styleMask:NSWindowStyleMaskBorderless
                                                     backing:NSBackingStoreBuffered
@@ -1621,10 +1720,10 @@ static void openCore(NSUInteger w, NSUInteger h, double period,
         [metalWindow makeKeyAndOrderFront:nil];
     });
     if (mappingWarning) failOpen(pm::kErrScreen, mappingWarning);
-    if (!displayCaptured)
+    if (capture && !displayCaptured)
         hookWarn(pm::kWarnDisplayCapture, "Could not capture the display; the window is above the shielding "
                  "level but may not come to the front, and the compositor may still be in the path.");
-    settleAppKit(1.0);
+    settleAppKit(0.001); // deliver initial transactions; readiness comes from actual presentation confirmations
     __block double originError = 0;
     onMainSync(^{
         NSScreen *sc = metalWindow.screen ? metalWindow.screen : NSScreen.mainScreen;
@@ -1654,10 +1753,17 @@ static void openCore(NSUInteger w, NSUInteger h, double period,
                      "Refusing to scale the stimulus.", actualDrawableSize.width,
                     actualDrawableSize.height, (unsigned long)w, (unsigned long)h]);
 #endif
+    }
     ifi = period;
     renderWidth = w;
     renderHeight = h;
     // As many queued frames as fit in a gigabyte, between 2 and 64.
+    if(standalone) {
+        auto td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:drawableFormat width:w height:h mipmapped:NO];
+        td.storageMode=MTLStorageModePrivate;td.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+        exportTexture=[device newTextureWithDescriptor:td];
+        if(!exportTexture) failOpen(pm::kErrMetal,@"Could not allocate the export canvas.");
+    }
     frameStoreLimit = (NSUInteger)std::min<double>(64, std::max<double>(2, floor(1073741824.0 / ((double)w * (double)h * 4))));
     captureToken = 0;
     if (readable) {
@@ -1729,6 +1835,7 @@ static void openCore(NSUInteger w, NSUInteger h, double period,
     pendingSlipRefreshes = 0.0;
     gridFirstPresented = gridLastPresented = 0;
     lastProjected = NAN;
+    lastTimedTarget = NAN;
     gridFirstFrame = gridLastFrame = 0;
     gridSamples = 0;
     measuredIFI = 0;
@@ -1746,6 +1853,16 @@ static double gridPointAtOrAfter(double t) {
     double period = gridPeriod();
     double k = ceil((t - gridLastPresented) / period - 1e-9);
     return gridLastPresented + k * period;
+}
+
+// The refresh a requested time asks for: the first at or after it, where a time
+// within 1% of a period after a refresh counts as that refresh. Refresh times are
+// estimates, good to about that, so a request on a refresh (vbl + k * ifi, the
+// usual way to ask for k frames later) would otherwise fall on either side of it
+// by chance. A time already past gets the next refresh from now, as before.
+static double gridPointForRequest(double when, double now) {
+    const double tolerance = 0.01 * gridPeriod();
+    return gridPointAtOrAfter(when - tolerance > now ? when - tolerance : fmax(when, now));
 }
 
 static bool sleepUntil(double deadline) {
@@ -1781,12 +1898,33 @@ static uint64_t enqueueDirect(double when, bool haveWhen) {
     r->presentRequest = NAN;
     r->projected = NAN;
 
+    // A frame for the next refresh, when the frame before it was given a time that has
+    // not come yet (Flip with a time returns long before then). Handed over at once,
+    // the system may show it over the waiting frame, which is then never shown, even
+    // when it asks for the refresh after that frame's (it did, with the waiting frame
+    // 30 refreshes ahead; probes/flip_when_v3.py). Handed over once the waiting frame
+    // is on the screen, it misses the next refresh and comes a refresh late. So it is
+    // held until half a refresh before the waiting frame's refresh, too late to be
+    // shown in it, and asks for the one after.
+    // A waiting frame due a refresh or less from now is past holding for: this one only
+    // asks for the refresh after it.
+    if (!haveWhen && !displayLinkPresentation && isfinite(lastTimedTarget) &&
+        lastTimedTarget + 0.5 * gridPeriod() > CACurrentMediaTime()) {
+        if (lastTimedTarget - 0.5 * gridPeriod() > CACurrentMediaTime() &&
+            !sleepUntil(lastTimedTarget - 0.5 * gridPeriod())) {
+            pthread_mutex_unlock(&lock);
+            fail("Close interrupted a presentation.");
+        }
+        when = lastTimedTarget + gridPeriod();
+        haveWhen = true;
+    }
     double targetNow=CACurrentMediaTime();
     PMPresentationTarget presentation=presentationTarget(targetNow,when,haveWhen,
-        haveWhen?gridPointAtOrAfter(fmax(when,targetNow)):NAN,gridPeriod());
+        haveWhen?gridPointForRequest(when,targetNow):NAN,gridPeriod());
     double target=presentation.target;
     if (isfinite(target)) {
-        const double kHoldLimit = 15.0;   // refreshes; beyond this, sleep
+        // PM_HOLD_LIMIT (refreshes) overrides the limit, for probes/flip_when_v3.py only.
+        static const double kHoldLimit = getenv("PM_HOLD_LIMIT") ? atof(getenv("PM_HOLD_LIMIT")) : 15.0;
         const double kWakeLead  = 12.0;   // refreshes before target to wake
         double aheadRefreshes = (target - CACurrentMediaTime()) / gridPeriod();
         if (aheadRefreshes > kHoldLimit) {
@@ -1819,6 +1957,7 @@ static uint64_t enqueueDirect(double when, bool haveWhen) {
         predicted = now + ifi;
     if (isfinite(lastProjected) && predicted <= lastProjected + 0.5 * gridPeriod())
         predicted = lastProjected + gridPeriod();
+    if (isfinite(target) && !displayLinkPresentation) lastTimedTarget = target;
     r->projected = predicted;
     r->presentRequest = presentation.request;
     r->scheduledAt = now;
@@ -1907,7 +2046,9 @@ static uint64_t enqueueDirect(double when, bool haveWhen) {
             pr->projected = pred;
         }
     }
+    const double settledAim = pr ? pr->projected : NAN;
     pthread_mutex_unlock(&lock);
+    recordAim(t, settledAim);            // a movie being recorded stamps the frame with this
     if (prefetchDrawable && !heldDrawable) heldDrawable = layer.nextDrawable;
     return t;
 }
@@ -2009,7 +2150,7 @@ static void *presenterMain(void *) {
         Record *r = recordFor(f.token);
         lastHandedToken = f.token;
         double now = CACurrentMediaTime();
-        double target = gridPointAtOrAfter(fmax(f.when, now));
+        double target = gridPointForRequest(f.when, now);
         if (!isfinite(target))
             target = fmax(f.when, now);
         if (isfinite(lastProjected) && target <= lastProjected + 0.5 * period)
@@ -2110,6 +2251,7 @@ static pm::QueueResult queueFrame(double when) {
     iosRequireFront();
 #endif
     if (!isfinite(when) || !(when > 0)) fail("A queued frame needs a presentation time.");
+    throwIfInterrupted();
     flushTarget();
     heldDrawable = nil;     // a held drawable would only be kept from the presenter
     pthread_mutex_lock(&lock);
@@ -2142,7 +2284,7 @@ static pm::QueueResult queueFrame(double when) {
     r->queued = 1;
     r->requestedTime = when;
     r->presentRequest = NAN;
-    r->projected = gridPointAtOrAfter(when);
+    r->projected = gridPointForRequest(when, CACurrentMediaTime());
     if (!isfinite(r->projected)) r->projected = when;
     pthread_mutex_unlock(&lock);
 
@@ -2225,19 +2367,20 @@ static std::vector<pm::QueuedFrame> queueResults(bool wait) {
             if (waitRelative(deadline) == ETIMEDOUT && CACurrentMediaTime() >= deadline) break;
         }
     }
-    std::vector<uint64_t> unfinished;
+    out.reserve(queuedTokens.size());
+    size_t unfinished=0;
     for (uint64_t t : queuedTokens) {
         Record *r = recordFor(t);
         if (!r) continue;                       // overwritten: more than NREC frames ago
         if (!r->done) {
             const bool lost = CACurrentMediaTime() >= r->requestedTime + PM_QUEUE_LOST;
-            if (!lost) unfinished.push_back(t);
+            if (!lost) queuedTokens[unfinished++]=t;
             if (!lost && !wait) continue;
         }
         out.push_back({t, r->requestedTime, (r->done && r->status == 0 && r->presented > 0) ? r->presented : NAN,
                        r->done ? r->status : 2});
     }
-    queuedTokens.swap(unfinished);
+    queuedTokens.resize(unfinished);
     pthread_mutex_unlock(&lock);
     return out;
 }
@@ -2271,14 +2414,20 @@ static void confirmStartup() {
     if(!device || closing) fail("PsychMetal is not open.");
     if(startupReady) return;
     if(drawCount) fail("Confirm startup before queuing stimulus drawing.");
-    startupRecords.reserve(12);
+    startupRecords.reserve(120);
     int consecutive=0;
     double deadline=CACurrentMediaTime()+2.0;
-    while(startupRecords.size()<12 && CACurrentMediaTime()<deadline) {
+    while(startupRecords.size()<120 && CACurrentMediaTime()<deadline) {
         uint64_t token=enqueue(0,false);
         pthread_mutex_lock(&lock);
         Record *r=recordFor(token);
         while(r && (!r->done || !r->gpuDone)) {
+#if !PM_IOS
+            if(pthread_main_np()) {
+                pthread_mutex_unlock(&lock);settleAppKit(0.001);pthread_mutex_lock(&lock);
+                if(CACurrentMediaTime()>=deadline) break;
+            } else
+#endif
             if(waitRelative(deadline)==ETIMEDOUT) break;
             r=recordFor(token);
         }
@@ -2302,7 +2451,7 @@ static void confirmStartup() {
             return;
         }
     }
-    fail("OpenWindow startup failed to obtain two consecutive confirmations within 12 attempts / two seconds. StartupHistory retains the attempts.");
+    fail("OpenWindow startup failed to obtain two consecutive confirmations within 120 attempts / two seconds. StartupHistory retains the attempts.");
 }
 // A submitted frame's record as it is now: its projected time until the display
 // reports, which FlipInfo and the history give later.
@@ -2426,6 +2575,7 @@ bool pm::defaultDisplayLink() noexcept {
 void pm::prepareApp() { @autoreleasepool { ::prepareApp(); } }
 
 pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
+    interruptRequested.store(false);
     @autoreleasepool {
         if (o.displayLink) {
             if (@available(macOS 14.0, iOS 17.0, *)) {} else
@@ -2518,7 +2668,7 @@ pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
                  b.origin.x, b.origin.y,
                  b.origin.x + b.size.width, b.origin.y + b.size.height,
                  (NSUInteger)o.drawableCount,
-                 o.readback, (int)o.bitDepth, o.displayLink, requestedDisplay);
+                 o.readback, (int)o.bitDepth, o.displayLink, requestedDisplay,false,o.captureDisplay);
         if (o.displayLink) {
             if (@available(macOS 14.0, iOS 17.0, *)) {
                 displayDriver = [[PMDisplayDriver alloc] initWithLayer:layer refresh:hz];
@@ -2534,9 +2684,68 @@ pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
     }
 }
 
+pm::OpenResult pm::openExport(uint64_t width,uint64_t height,double hz,bool readback) {
+    @autoreleasepool {
+        if(width<2||height<2||width>8192||height>8192||width*height>16777216)
+            fail("Export dimensions must be 2..8192 with at most 16777216 pixels.");
+        if(!std::isfinite(hz)||hz<20||hz>1000) fail("refreshHz must be 20..1000.");
+#if PM_IOS
+        if(pthread_main_np()) fail("Run the export on a thread of its own; the main thread belongs to the app.");
+#endif
+        interruptRequested.store(false);
+        clearRGBA[0]=clearRGBA[1]=clearRGBA[2]=0;clearRGBA[3]=1;
+        openCore(width,height,1/hz,0,0,0,width,height,3,readback,8,false,0,true);
+        return {double(width),double(height),1/hz,double(width),double(height),sessionEpoch};
+    }
+}
+
+// Render through the same pipelines and recorder, without a presentation layer.
+// GPU completion is bounded and is never reported as physical presentation.
+static uint64_t renderExportFrame() {
+#if PM_IOS
+    iosRequireFront();
+#endif
+    if(!device||closing) fail("PsychMetal is not open.");
+    if(!recordingClock.active()) fail("Start a virtual-clock recording before flipping an export canvas.");
+    flushTarget();
+    pthread_mutex_lock(&lock);
+    if(asynchronousGpuFailure||nextToken>=PM_MAX_ID) {pthread_mutex_unlock(&lock);fail("Export GPU session failed; Close and reopen.");}
+    const uint64_t token=nextToken++;
+    auto &r=rec[token%NREC];memset(&r,0,sizeof(r));r.token=token;r.status=2;
+    r.projected=r.presented=r.requestedTime=r.presentRequest=NAN;
+    pthread_mutex_unlock(&lock);
+    auto markFailed=[&] {
+        pthread_mutex_lock(&lock);asynchronousGpuFailure=true;
+        if(auto q=recordFor(token)) {q->status=3;q->done=1;}
+        pthread_mutex_unlock(&lock);
+    };
+    auto failed=[&](const char *message) {markFailed();fail(message);};
+    id<MTLCommandBuffer> cb=[queue commandBuffer];
+    try {
+        if(!encodeFrame(cb,exportTexture,token)) failed("Could not render the export frame.");
+    } catch(...) {
+        // An uncommitted encoder may still own shape-buffer reservations.
+        // Require Close rather than attempting another frame with that state.
+        markFailed();throw;
+    }
+    watchRender(cb,token);
+    dispatch_semaphore_t done=dispatch_semaphore_create(0);
+    [cb addCompletedHandler:^(id<MTLCommandBuffer>){dispatch_semaphore_signal(done);}];
+    [cb commit];
+    if(dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,20*NSEC_PER_SEC)))
+        failed("Timed out rendering the export frame.");
+    if(cb.status!=MTLCommandBufferStatusCompleted) failed("The GPU failed to render the export frame.");
+    pthread_mutex_lock(&lock);
+    if(auto q=recordFor(token)) {q->renderDone=1;q->gpuDone=1;q->done=1;}
+    pthread_mutex_unlock(&lock);
+    return token;
+}
+
 std::vector<pm::StartupRecord> pm::startupHistory() { return startupHistoryRecords(); }
 
 std::vector<pm::StartupRecord> pm::confirmStartup() {
+    if(exportSession) fail("An export canvas has no display startup to confirm.");
+    if(recordingClock.active()) fail("Confirm startup before virtual-clock recording.");
     @autoreleasepool {
         ::confirmStartup();
         return startupHistoryRecords();
@@ -2551,10 +2760,18 @@ pm::FlipResult pm::flip(double target) {
     @autoreleasepool {
         double began = CACurrentMediaTime();
         if (target < 0) fail("Target must be nonnegative.");
-        uint64_t token = enqueue(target, target > 0);
+        throwIfInterrupted();
+        const bool logical=recordingClock.active();
+        if (logical) target=recordingClock.beginFlip(began,target);
+        struct FinishClock {
+            bool active;
+            ~FinishClock() { if(active) recordingClock.finishFlip(CACurrentMediaTime()); }
+        } finishClock{logical};
+        uint64_t token = exportSession ? renderExportFrame() : enqueue(target, target > 0);
         lastFlipToken = token;      // before anything can throw: flipStatus is then about this frame
         double queued = CACurrentMediaTime();
-        Record r = submitted(token);
+        Record r{};
+        if(!exportSession) r=submitted(token);
         bool confirmed = r.status == 0 && r.presented > 0;
         pm::FlipResult out{};
         out.time = confirmed ? r.presented : r.projected;
@@ -2564,8 +2781,14 @@ pm::FlipResult pm::flip(double target) {
         out.gridPeriod = gridPeriod();
         pthread_mutex_unlock(&lock);
         out.queueMs = (queued - began) * 1000;
-        out.returnTime = CACurrentMediaTime();
-        out.callMs = (out.returnTime - began) * 1000;
+        const double returned=CACurrentMediaTime();
+        out.returnTime = returned;
+        out.callMs = (returned - began) * 1000;
+        if(logical) {
+            out.time=out.returnTime=recordingClock.finishFlip(returned);
+            out.gridPeriod=recordingClock.period();
+            finishClock.active=false;
+        }
         out.token = token;
         return out;
     }
@@ -2581,9 +2804,23 @@ pm::FlipStatus pm::flipStatus() {
     return out;
 }
 
-pm::QueueResult pm::queueFlip(double when) { @autoreleasepool { return ::queueFrame(when); } }
+pm::QueueResult pm::queueFlip(double when) { @autoreleasepool {
+    if(exportSession) fail("An export canvas uses Flip, not queued display presentation.");
+    const bool logical=recordingClock.active();
+    if(logical) when=recordingClock.beginQueue(CACurrentMediaTime(),when);
+    struct FinishClock {
+        bool active;
+        ~FinishClock() {if(active) recordingClock.finishFlip(CACurrentMediaTime());}
+    } finishClock{logical};
+    auto result=::queueFrame(when);
+    if(logical) recordingClock.rememberQueued(result.token);
+    return result;
+} }
 
-std::vector<pm::QueuedFrame> pm::queueResults(bool wait) { return ::queueResults(wait); }
+std::vector<pm::QueuedFrame> pm::queueResults(bool wait) {
+    pm::recording::Sequence sequenceClock(recordingClock,CACurrentMediaTime);
+    return ::queueResults(wait);
+}
 
 uint64_t pm::queueCancel() { return ::queueCancel(); }
 
@@ -2713,7 +2950,7 @@ uint64_t pm::makeTexture(const pm::ArrayView &image) {
     for(int i=0;i<PM_MAX_TEXTURES;i++) if(!userTextures[i]) { slot=i; break; }
     if(slot<0) fail("No free texture slots.");
     if(nextTextureHandle>=PM_MAX_ID) fail("Texture handle space exhausted.");
-    @autoreleasepool { uploadTexture(slot,image); }
+    @autoreleasepool { uploadTexture(slot,image,true); }
     textureHandles[slot]=nextTextureHandle++;
     texturesCreated++;
     return textureHandles[slot];
@@ -2792,9 +3029,11 @@ void pm::updateTextureRegion(uint64_t handle, const pm::ArrayView &image, double
     PMTextureRef texture=userTextures[slot];
     if(texture->offscreen) fail("That is an offscreen window; draw into it instead.");
     const bool bytes=pm::internal::isByteImage(image);
+    const bool fullFloat=texture->fullFloat;
     pm::internal::ImageShape shape;
     const void *texels;
     if(bytes) texels=pm::internal::packBytes(image,byteScratch,shape);
+    else if(fullFloat) texels=pm::internal::packSingles(image,singleScratch,shape);
     else { shape=pm::internal::packImage(image,uploadScratch); texels=uploadScratch.data(); }
     if(bytes!=texture->bytes || shape.channels!=texture->channels)
         fail("A partial update must have the texture's type (uint8 or logical, or float) and channel count.");
@@ -2819,9 +3058,7 @@ void pm::updateTextureRegion(uint64_t handle, const pm::ArrayView &image, double
     double began=CACurrentMediaTime();
     size_t c=shape.channels;
     @autoreleasepool {
-        [texture->texture replaceRegion:MTLRegionMake2D((NSUInteger)x,(NSUInteger)y,shape.width,shape.height)
-            mipmapLevel:0 withBytes:texels
-            bytesPerRow:shape.width*(c==1?1:4)*(bytes?sizeof(uint8_t):sizeof(__fp16))];
+        writeTexture(texture,texels,shape.width,shape.height,shape.width*(c==1?1:4)*(bytes?1:fullFloat?4:2),(size_t)x,(size_t)y);
     }
     cpuUploadMs=(CACurrentMediaTime()-began)*1000;
 }
@@ -3608,6 +3845,7 @@ pm::KbCheck pm::kbQueueCheck() {
 }
 
 pm::KeyState pm::keys() {
+    throwIfInterrupted();
     pm::KeyState out{};
     bool state[256]; readKeyboardState(state,nullptr);
     for(int k=0;k<256;k++) out.down[(size_t)k]=state[k];
@@ -3621,7 +3859,7 @@ pm::KeyState pm::keys() {
 
 // --- time ---------------------------------------------------------------------
 
-double pm::now() noexcept { return CACurrentMediaTime(); }
+double pm::now() noexcept { return recordingClock.now(CACurrentMediaTime()); }
 
 // The calling thread, for the length of one wait, as Apple's real-time threads
 // are: a time-constraint policy, so the scheduler wakes it at its deadline
@@ -3654,6 +3892,8 @@ struct PMRealtimeWait {
 };
 
 double pm::waitUntil(double untilTime) {
+    if(exportSession && recordingClock.active())return recordingClock.advanceWait(untilTime,CACurrentMediaTime());
+    untilTime=recordingClock.deadline(untilTime,CACurrentMediaTime());
     // Shared by every thread that waits; it touches nothing else of the engine's.
     static std::atomic<double> spinMargin{0.0005};
     double sleepUntilT = untilTime - spinMargin.load(std::memory_order_relaxed);
@@ -3681,7 +3921,7 @@ double pm::waitUntil(double untilTime) {
             spinMargin.store(fmax(0.0005, margin * 0.95), std::memory_order_relaxed);
     }
     while (CACurrentMediaTime() < untilTime) { }
-    return CACurrentMediaTime();
+    return pm::now();
 }
 
 // --- diagnostics ----------------------------------------------------------------
@@ -3709,6 +3949,11 @@ pm::DiagnosticReport pm::diagnostic() {
         d.renderWidth = (double)renderWidth;
         d.renderHeight = (double)renderHeight;
         d.readbackEnabled = captureBuffer != nil;
+#if PM_IOS
+        d.displayCaptured=false;
+#else
+        d.displayCaptured=displayCaptured;
+#endif
         d.shapesAppended = (double)shapesAppended;
         d.shapesEncoded = (double)shapesEncoded;
         d.texturesCreated = (double)texturesCreated;
@@ -3942,6 +4187,7 @@ pm::TimelineResult pm::playTimeline(uint64_t frames, const pm::ArrayView &tracks
     const double period=gridPeriod();
     pthread_mutex_unlock(&lock);
     if(!idle) fail("Timed out waiting for queued frames; QueueCancel them before PlayTimeline.");
+    pm::recording::Sequence sequenceClock(recordingClock,CACurrentMediaTime);
     pm::TimelineResult result{};
     result.expectedRefreshHz=1/period;
     pm::timeline::Presentations shown;shown.period=period;
@@ -3998,7 +4244,7 @@ pm::TimelineResult pm::playTimeline(uint64_t frames, const pm::ArrayView &tracks
     clearQueued();
     if(result.cancelled) timelineCancellation.store(false);    // the request is spent
     if(result.submitted) {      // the last reports arrive a few refreshes after the last Flip
-        awaitPresentation(result.lastToken,CACurrentMediaTime()+0.1+8*period);
+        if(!exportSession) awaitPresentation(result.lastToken,CACurrentMediaTime()+0.1+8*period);
         collect();
     }
     result.shown=shown.shown;result.late=shown.late;result.lateRefreshes=shown.lateRefreshes;
@@ -4012,3 +4258,4 @@ pm::TimelineResult pm::playTimeline(uint64_t frames, const pm::ArrayView &tracks
 
 // --- movies -----------------------------------------------------------------------
 #include "PsychMetalMovie.h"
+#include "PsychMetalRecord.h"

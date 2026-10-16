@@ -3,7 +3,7 @@
 The iPhone/iPad app presents educational demonstrations of contrast, motion,
 hidden boundaries and the timing of sight and sound. Each item has teaching notes before it starts. A **three-finger tap** returns to the menu. Diagnostic mode starts off.
 
-All thirteen public non-keyboard MATLAB/Octave/Python demos are included; see
+All fifteen public non-keyboard MATLAB/Octave/Python demos are included; see
 [DEMO-PARITY.md](DEMO-PARITY.md) for the mapping and touch controls.
 
 The full developer tests remain in the toolbox; the public menu does not expose
@@ -22,7 +22,7 @@ Xcode 26 or later, its Metal compiler
 shaders compiled for the iPhone and the simulator.
 
 1. Build the two Python 3.14 iOS wheels into this folder's `wheels/` directory.
-   Use the 0.9.0 device/simulator release wheels, or build fresh wheels from this source. cibuildwheel needs python.org's
+   Use the 0.10.0 device/simulator release wheels, or build fresh wheels from this source. cibuildwheel needs python.org's
    Python 3.14 installed (the framework alone is enough), not Homebrew's.
 
        python3 -m venv ~/venvs/cibw && ~/venvs/cibw/bin/pip install cibuildwheel
@@ -60,7 +60,7 @@ behind, and are not kept in the repository.
 `tests/test_phone_demos.py` checks the list and runs these demos against the
 scripted engine. It does not make the app's window.
 
-## 0.9.0 reports and offline preflight
+## 0.10.0 reports and offline preflight
 
 Optional tests and all report/view/export tools are attached to the menu only
 while Diagnostic mode is on; existing reports remain saved when it is off.
@@ -74,3 +74,16 @@ After building, run `store/verify_bundle.py APP_PATH IOS` (or `IOSSIMULATOR`) an
 `store/verify_privacy.py APP_PATH`. These inspect deployment metadata, privacy
 resources, bundled source/assets and static archives, without uploading anything.
 They do not replace Apple validation, actual MSL/GPU execution or device tests.
+
+## Movies
+
+Movie playback uses a bundled numbered sample with sound. Record a stimulus
+uses the shared Python demo to write an H.264 movie with generated clicks in
+app-local storage, then replays it. Share recorded movie saves/sends a snapshot
+through the system sheet; cancelling preserves the original. This control is
+available independently of diagnostics. No Photos picker or camera is used.
+
+Export a stimulus writes a three-second frame-counted Gabor movie without
+replacing the app window. It uses the same app-local destination and Share
+recorded movie control. The user functionally checked export and recorded-movie replay on an iPhone.
+Broader device/codec coverage and measured A/V onset remain unverified.

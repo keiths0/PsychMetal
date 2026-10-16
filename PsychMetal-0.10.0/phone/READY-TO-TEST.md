@@ -1,12 +1,12 @@
-# 0.9.0 phone build: what to check
+# 0.10.0 phone build: what to check
 
-App version: 0.9.0; build: 1. No App Store upload is included in the GitHub release.
-Build with fresh 0.9.0 device and simulator wheels; see README.md. After an
+App version: 0.10.0; build: 1. No App Store upload is included in the GitHub release.
+Build with fresh 0.10.0 device and simulator wheels; see README.md. After an
 engine change, rebuild the wheels and run `briefcase update iOS -r` and
 `python3 store/prepare_xcode.py`. Open the generated project:
 
 ```sh
-open "$HOME/Developer/PsychMetal/PsychMetal-0.9.0/phone/build/psychmetaldemos/ios/xcode/PsychMetal Demos.xcodeproj"
+open "$HOME/Developer/PsychMetal/PsychMetal-0.10.0/phone/build/psychmetaldemos/ios/xcode/PsychMetal Demos.xcodeproj"
 ```
 
 Choose your device and signing team, then Run. For timing, stop debugging and
@@ -16,7 +16,7 @@ and `python3 store/verify_privacy.py APP` on the built app.
 ## Carried over from 0.8.1
 
 Sharing: open Share reports before running any demo, cancel, reopen sharing, and
-start a demonstration. Check About shows 0.9.0. (Full-width sharing,
+start a demonstration. Check About shows 0.10.0. (Full-width sharing,
 cancellation recovery and report export passed on the phone for 0.8.1 on
 October 10.)
 
@@ -24,7 +24,7 @@ Diagnostic menu: on launch, optional tests and report tools are absent. Turn
 Diagnostic mode on to reveal them, then off to hide them. Turning it on again
 must retain saved reports. About/help remains available in either mode.
 
-## Sound (new in 0.9.0)
+## Sound (new in 0.10.0)
 
 1. The menu has a Sound and time section with both demos and their pictures.
 2. Sound recorder, first run: the system asks for the microphone. Allow it. The
@@ -43,11 +43,55 @@ must retain saved reports. About/help remains available in either mode.
    each is seen or heard; the dial (phase) and slider (frequency) move by
    finger; Match shows the error. Nothing plays when both are seen.
 6. Interruption: with Diagnostic mode on, start a sound demo, then take a call
-   (a FaceTime audio call from a Mac will do). Audio stops, and may resume
-   afterwards, as iOS decides; the app does not crash. Quit; View last demo
+   (a FaceTime audio call from a Mac will do). Old sounds/recordings end with Interrupted. The audio unit restarts when
+   iOS permits resuming; a fresh sound should play afterwards; the app does not crash. Quit; View last demo
    output shows the route warning, also when an earlier run in the same launch
    showed one. Then the same with Siri during a tone: iOS posts no notice for
-   Siri, but 0.9.0 also notices when the output stops for over 50 ms, so if
+   Siri, but 0.10.0 also notices when the output stops for over 50 ms, so if
    Siri stops the output the warning says "the output stopped for a while". If
-   no warning appears, Siri only silenced the app (the limit in AUDIT-0.9.0.md).
+   no warning appears, Siri only silenced the app (the limit in ../AUDIO.md).
 7. Three fingers leave both sound demos at any time, as Quit does.
+
+## Movies (0.10.0)
+
+- Movie playback: numbered frames and sound, followed by the rotating movie.
+- Record a stimulus: drifting Gabor, dot, counter, deliberate hold, then replay.
+- Share recorded movie: with diagnostics off, save to Files, cancel and reopen.
+  Sharing must not leave demo controls disabled. Restart the app: the completed
+  movie remains available. A failed recording must preserve the previous file.
+- Run movies in portrait and landscape; labels avoid the camera housing.
+
+New standalone export check: Export a stimulus should leave the menu window in
+place while writing a three-second movie. Share recorded movie should provide a
+640x480, 180-frame H.264 Gabor clip. Check duration and motion in the exported
+file. During export, backgrounding must stop further GPU submissions safely;
+the previous completed movie must survive a failed replacement.
+
+Export completion: Create movie should lead to a Movie ready page showing
+180 frames / 3 seconds, with Play exported movie, Share movie and Back to demos.
+Preview must play the exported Gabor clip, not the numbered bundled sample.
+Cancelling sharing must re-enable Share movie; missing/empty exports must open
+an error page even when Diagnostic mode is off.
+
+## Remaining-wishlist engine refresh (October 15)
+
+The rebuilt engine uses bounded movie lookahead and warms playback before its
+A/V start. Recheck bundled Movie playback, Record a stimulus (including replay
+sync and duration), Export a stimulus, and share/cancel recovery. Older iPhones
+retain half-float image uploads when 32-bit filtering is unsupported.
+
+Mac-only follow-up: run PsychMetalOpenReadyTest(50), then the performance audit
+in ../python/performance_audit.py. Verify unplug/reconnect recovery with sound
+and optional recording; interrupted playback must stop, loaded sound handles
+must remain usable, and timing must stay invalid after the route change.
+All-intra conversion and preload APIs are documented in ../WISHLIST-0.10.0.md.
+Do not infer photon/speaker timing from the software offset reports.
+
+## Demo launch pages (October 15)
+
+A large filled Start demo button is fixed at the top of each demonstration page.
+Hidden ring shows full-width speed/cell sliders below it, with current numeric
+values and range endpoints. Both sides of each track have explicit colours.
+Settings and instructions scroll below the fixed Start button. Export uses Create movie. Check these
+controls on the smallest supported phone and in landscape; option selection and
+three-finger return retain their existing behavior.

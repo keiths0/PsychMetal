@@ -6,9 +6,13 @@
 typedef int32_t CVReturn;
 enum { kCVReturnSuccess = 0 };
 typedef CVImageBufferRef CVPixelBufferRef;
+typedef struct __CVPixelBufferPool *CVPixelBufferPoolRef;
+CVReturn CVPixelBufferPoolCreatePixelBuffer(CFAllocatorRef, CVPixelBufferPoolRef, CVPixelBufferRef *pixelBufferOut);
+void CVPixelBufferRelease(CVPixelBufferRef);
 typedef struct __CVMetalTextureCache *CVMetalTextureCacheRef;
 typedef CVImageBufferRef CVMetalTextureRef;
-extern const CFStringRef kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferMetalCompatibilityKey;
+extern const CFStringRef kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferMetalCompatibilityKey, kCVPixelBufferWidthKey,
+    kCVPixelBufferHeightKey;
 enum { kCVPixelFormatType_32BGRA = 0x42475241 };
 size_t CVPixelBufferGetWidth(CVPixelBufferRef);
 size_t CVPixelBufferGetHeight(CVPixelBufferRef);

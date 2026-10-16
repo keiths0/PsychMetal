@@ -78,7 +78,7 @@ setup(
         language='c++',
         depends=['PsychMetalDisplayLink.h', 'PsychMetalEngine.h', 'PsychMetalInternal.h', 'PsychMetalIOS.h',
                  'PsychMetalCustomShader.h', 'PsychMetalLiveTimeline.h', 'PsychMetalKeyframes.h', 'PsychMetalTimeline.h', 'PsychMetalReadback.h', 'PsychMetalKeyboardQueue.h', 'PsychMetalShaders.h',
-                 'PsychMetalAudio.h', 'PsychMetalAudioHost.h', 'PsychMetalAudioEngine.h', 'PsychMetalMovie.h', 'PsychMetalShaders.metal'],
+                 'PsychMetalAudio.h', 'PsychMetalAudioHost.h', 'PsychMetalAudioEngine.h', 'PsychMetalMovie.h', 'PsychMetalRecord.h', 'PsychMetalRecordingClock.h', 'PsychMetalOfflineAudio.h', 'PsychMetalShaders.metal'],
         extra_compile_args=['-std=c++17', '-stdlib=libc++', '-fexceptions', '-fwrapv', '-ffp-contract=off',
                             '-O2', '-DNDEBUG', '-Wall', '-Wextra'],
         extra_link_args=['-stdlib=libc++'] + [arg for f in frameworks for arg in ('-framework', f)],

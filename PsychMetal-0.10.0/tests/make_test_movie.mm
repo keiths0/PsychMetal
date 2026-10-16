@@ -26,11 +26,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 #include <string>
 #include <vector>
 
 static int failed(const char *what, NSError *error = nil) {
     fprintf(stderr, "make_test_movie: %s%s%s\n", what, error ? ": " : "", error ? error.localizedDescription.UTF8String : "");
+    for (NSError *cause = error; cause; cause = cause.userInfo[NSUnderlyingErrorKey])
+        fprintf(stderr, "  %s (%ld): %s\n", cause.domain.UTF8String, (long)cause.code,
+                cause.userInfo.description.UTF8String);
     return 1;
 }
 
@@ -91,8 +95,12 @@ int main(int argc, char **argv) { @autoreleasepool {
     if (!type) return failed("CODEC must be prores4444, prores422, h264 or hevc");
     NSString *ext = out.pathExtension.lowercaseString;
     AVFileType fileType = [ext isEqual:@"mp4"] ? AVFileTypeMPEG4 : [ext isEqual:@"m4v"] ? AVFileTypeAppleM4V : AVFileTypeQuickTimeMovie;
-    NSURL *url = [NSURL fileURLWithPath:out];
-    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+    NSString *staging = [out stringByAppendingFormat:@".%@.tmp", NSUUID.UUID.UUIDString];
+    NSURL *url = [NSURL fileURLWithPath:staging];
+    struct Cleanup {
+        NSURL *url;
+        ~Cleanup() { [NSFileManager.defaultManager removeItemAtURL:url error:nil]; }
+    } cleanup{url};
 
     NSError *error = nil;
     AVAssetWriter *writer = [AVAssetWriter assetWriterWithURL:url fileType:fileType error:&error];
@@ -238,6 +246,8 @@ int main(int argc, char **argv) { @autoreleasepool {
         return 1;
     }
     if (reader.status == AVAssetReaderStatusFailed) return failed("decoding failed", reader.error);
+    if (std::rename(staging.fileSystemRepresentation, out.fileSystemRepresentation))
+        return failed(std::strerror(errno));
     printf("PASS: %s: %s, %dx%d, %d frames at %lld/%lld per second%s, every frame read back in order with its number.\n",
            argv[1], codec.c_str(), w, h, frames, (long long)rateNum, (long long)rateDen, sound ? ", with sound" : "");
     return 0;

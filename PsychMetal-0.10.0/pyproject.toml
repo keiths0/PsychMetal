@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "psychmetal"
-version = "0.9.0"
+version = "0.10.0"
 description = "Native Metal stimulus presentation on Apple silicon, with a Psychtoolbox Screen-like interface"
 readme = "python/README.md"
 requires-python = ">=3.10"
@@ -26,8 +26,8 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/keiths0/PsychMetal"
-Documentation = "https://github.com/keiths0/PsychMetal/blob/main/PsychMetal-0.9.0/README.md"
-Changelog = "https://github.com/keiths0/PsychMetal/blob/main/PsychMetal-0.9.0/CHANGELOG.md"
+Documentation = "https://github.com/keiths0/PsychMetal/blob/main/PsychMetal-0.10.0/README.md"
+Changelog = "https://github.com/keiths0/PsychMetal/blob/main/PsychMetal-0.10.0/CHANGELOG.md"
 
 [tool.setuptools]
 package-dir = { "" = "python" }

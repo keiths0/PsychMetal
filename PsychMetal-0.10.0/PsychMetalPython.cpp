@@ -589,8 +589,8 @@ PyObject *py_prepare_app(PyObject *, PyObject *) {
 }
 
 PyObject *py_open_session(PyObject *, PyObject *args) {
-    PyObject *screen, *count, *refresh = Py_None, *readback = nullptr, *bits = nullptr, *link = nullptr;
-    if (!PyArg_ParseTuple(args, "OO|OOOO", &screen, &count, &refresh, &readback, &bits, &link))
+    PyObject *screen, *count, *refresh = Py_None, *readback = nullptr, *bits = nullptr, *link = nullptr, *capture = nullptr;
+    if (!PyArg_ParseTuple(args, "OO|OOOOO", &screen, &count, &refresh, &readback, &bits, &link, &capture))
         return nullptr;
     return guarded([&]() -> PyObject * {
         pm::OpenOptions o;
@@ -600,10 +600,22 @@ PyObject *py_open_session(PyObject *, PyObject *args) {
         if (readback && readback != Py_None) o.readback = truth(readback, "readback");
         if (bits && bits != Py_None) o.bitDepth = unsignedScalar(bits, "bit depth", 10);
         if (link && link != Py_None) o.displayLink = truth(link, "display link");
+        if(capture && capture!=Py_None)o.captureDisplay=truth(capture,"capture display");
         pm::OpenResult r{};
         engine([&] { r = pm::openSession(o); });
         return Py_BuildValue("(dddddK)", r.pixelWidth, r.pixelHeight, r.ifi, r.pointWidth, r.pointHeight,
                              (unsigned long long)r.sessionToken);
+    });
+}
+
+PyObject *py_open_export(PyObject *,PyObject *args) {
+    PyObject *width,*height,*rate,*readback;
+    if(!PyArg_ParseTuple(args,"OOOO",&width,&height,&rate,&readback)) return nullptr;
+    return guarded([&]() -> PyObject * {
+        auto w=unsignedScalar(width,"export width",8192),h=unsignedScalar(height,"export height",8192);
+        double hz=scalar(rate,"refreshHz");bool rb=truth(readback,"readback");pm::OpenResult r{};
+        engine([&]{r=pm::openExport(w,h,hz,rb);});
+        return Py_BuildValue("(dddddK)",r.pixelWidth,r.pixelHeight,r.ifi,r.pointWidth,r.pointHeight,(unsigned long long)r.sessionToken);
     });
 }
 
@@ -982,10 +994,25 @@ PyObject *py_open_movie(PyObject *, PyObject *args) {
         pm::MovieInfo i;
         uint64_t h = 0;
         engine([&] { h = pm::openMovie(p, i); });
-        return checked(Py_BuildValue("(K{s:d,s:d,s:d,s:d,s:d,s:O,s:d,s:d,s:s})", (unsigned long long)h,
+        return checked(Py_BuildValue("(K{s:d,s:d,s:d,s:d,s:d,s:O,s:d,s:d,s:s,s:d})", (unsigned long long)h,
             "width", i.width, "height", i.height, "frames", i.frames, "frameRate", i.frameRate,
             "duration", i.duration, "constantRate", i.constantRate ? Py_True : Py_False,
-            "soundChannels", i.soundChannels, "soundRate", i.soundRate, "codec", i.codec.c_str()));
+            "soundChannels", i.soundChannels, "soundRate", i.soundRate, "codec", i.codec.c_str(),"keyframeInterval",i.keyframeInterval));
+    });
+}
+PyObject *py_transcode_movie(PyObject *,PyObject *args) {
+    PyObject *a,*b,*c;if(!PyArg_ParseTuple(args,"OOO",&a,&b,&c))return nullptr;
+    return guarded([&]()->PyObject* {
+        auto source=utf8(a,"source"),destination=utf8(b,"destination"),codec=utf8(c,"codec");uint64_t frames=0;
+        engine([&]{frames=pm::transcodeMovie(source,destination,codec);});return PyLong_FromUnsignedLongLong(frames);
+    });
+}
+PyObject *py_prepare_movie(PyObject *,PyObject *args) {
+    PyObject *h,*f,*b;if(!PyArg_ParseTuple(args,"OOO",&h,&f,&b))return nullptr;
+    return guarded([&]()->PyObject* {
+        auto handle=unsignedScalar(h,"movie",pm::kMaxId);auto frames=unsignedScalar(f,"frames",256);
+        auto bytes=unsignedScalar(b,"maxBytes",2147483648ull);uint64_t count=0;
+        engine([&]{count=pm::prepareMovie(handle,(uint32_t)frames,bytes);});return PyLong_FromUnsignedLongLong(count);
     });
 }
 PyObject *py_movie_frame_times(PyObject *, PyObject *args) {
@@ -1046,13 +1073,50 @@ PyObject *py_play_movie(PyObject *, PyObject *args) {
         if (audioBusy)
             throw pm::Error("PsychMetal audio is in use on another thread, and the main thread cannot wait "
                             "for it. Call it from the experiment's thread.");
-        return checked(Py_BuildValue("{s:K,s:K,s:K,s:K,s:O,s:d,s:d,s:K,s:K,s:K,s:d,s:d,s:K}",
+        return checked(Py_BuildValue("{s:K,s:K,s:K,s:K,s:O,s:d,s:d,s:K,s:K,s:K,s:d,s:d,s:K,s:d,s:d,s:d}",
             "submitted", (unsigned long long)m.submitted, "firstToken", (unsigned long long)m.firstToken,
             "lastToken", (unsigned long long)m.lastToken, "frames", (unsigned long long)m.frames,
             "cancelled", m.cancelled ? Py_True : Py_False, "start", m.start, "firstPresented", m.firstPresented,
             "shown", (unsigned long long)m.shown, "late", (unsigned long long)m.late,
             "lateRefreshes", (unsigned long long)m.lateRefreshes, "expectedRefreshHz", m.expectedRefreshHz,
-            "longestIntervalMs", m.longestIntervalMs, "voice", (unsigned long long)m.voice));
+            "longestIntervalMs", m.longestIntervalMs, "voice", (unsigned long long)m.voice, "audioStartOffsetMs",m.audioStartOffsetMs,
+            "audioEndOffsetMs",m.audioEndOffsetMs,"audioVideoDriftMs",m.audioVideoDriftMs));
+    });
+}
+// Recording takes the audio lock as well: it taps the audio output, and must not
+// do so while another thread opens or closes audio.
+template <class F> void engineWithAudio(F &&fn) {
+    bool audioBusy = false;
+    engine([&] {
+        std::unique_lock<std::timed_mutex> held(audioMutex, std::defer_lock);
+        audioBusy = pm::onMainThread() ? !held.try_lock_for(std::chrono::milliseconds(50)) : (held.lock(), false);
+        if (!audioBusy) fn();
+    });
+    if (audioBusy)
+        throw pm::Error("PsychMetal audio is in use on another thread, and the main thread cannot wait "
+                        "for it. Call it from the experiment's thread.");
+}
+PyObject *py_start_movie_recording(PyObject *, PyObject *args) {
+    PyObject *path, *codec, *scale, *sound, *clock=nullptr;
+    if (!PyArg_ParseTuple(args, "OOOO|O", &path, &codec, &scale, &sound, &clock)) return nullptr;
+    return guarded([&]() -> PyObject * {
+        std::string p = utf8(path, "The movie path"), c = utf8(codec, "codec");
+        double s = scalar(scale, "scale");
+        bool withSound = unsignedScalar(sound, "sound", 1) != 0;
+        bool logical=clock && unsignedScalar(clock,"virtual clock",1)!=0;
+        engineWithAudio([&] { pm::startMovieRecording(p, c, s, withSound, logical); });
+        Py_RETURN_NONE;
+    });
+}
+PyObject *py_stop_movie_recording(PyObject *, PyObject *) {
+    return guarded([&]() -> PyObject * {
+        pm::MovieRecording r;
+        engineWithAudio([&] { r = pm::stopMovieRecording(); });
+        return checked(Py_BuildValue("{s:s,s:s,s:d,s:d,s:d,s:d,s:d,s:d,s:d,s:d,s:O,s:d,s:d,s:O}", "path", r.path.c_str(),
+            "codec", r.codec.c_str(), "width", r.width, "height", r.height, "frames", r.frames,
+            "refreshes", r.refreshes, "refreshHz", r.refreshHz, "duration", r.duration, "late", r.late,
+            "unreported", r.unreported, "sound", r.sound ? Py_True : Py_False, "soundSeconds", r.soundSeconds,
+            "soundLostSeconds", r.soundLostSeconds, "virtualClock", r.virtualClock ? Py_True : Py_False));
     });
 }
 PyObject *py_close_movie(PyObject *, PyObject *args) {
@@ -1507,6 +1571,7 @@ PyObject *py_diagnostic(PyObject *, PyObject *) {
         r4("lastShapeColor", d.lastShapeColor);
         r4("screenSafeAreaInsets", d.screenSafeAreaInsets);
         num("backingScaleFactor", d.backingScaleFactor);
+        flag("displayCaptured",d.displayCaptured);
         if (!ok) { Py_DECREF(history); Py_DECREF(s); throw PythonErrorSet{}; }
         return Py_BuildValue("(NN)", history, s);
     });
@@ -1548,6 +1613,7 @@ PyMethodDef methods[] = {
     PM_METHOD(tone, METH_VARARGS, "tone(frequency, seconds, rate[, amplitude, ramp]) -> samples."),
     PM_METHOD(click, METH_VARARGS, "click(rate[, seconds, amplitude]) -> samples."),
     PM_METHOD(white_noise, METH_VARARGS, "white_noise(seconds, rate[, amplitude, seed, ramp]) -> samples."),
+    PM_METHOD(open_export, METH_VARARGS, "open_export(width,height,refresh_hz,readback)."),
     PM_METHOD(open_session, METH_VARARGS, "open_session(screen, drawables[, refresh_hz[, readback[, bit_depth[, display_link]]]])."),
     PM_METHOD(startup_history, METH_NOARGS, "Startup history, n x 6."),
     PM_METHOD(confirm_startup, METH_NOARGS, "Confirm two background presentations; returns startup history."),
@@ -1576,11 +1642,15 @@ PyMethodDef methods[] = {
               "draw_textures(handle (N,), src (N,4), dst (N,4), angle_rad (N,), tint (N,4), filter (N,)), float64."),
     PM_METHOD(close_texture, METH_VARARGS, "close_texture(handle)."),
     PM_METHOD(open_movie, METH_VARARGS, "open_movie(path) -> (handle, info)."),
+    PM_METHOD(transcode_movie, METH_VARARGS, "transcode_movie(source, destination, codec) -> frames."),
+    PM_METHOD(prepare_movie, METH_VARARGS, "prepare_movie(handle, frames, max_bytes) -> resident frames."),
     PM_METHOD(movie_frame_times, METH_VARARGS, "movie_frame_times(handle) -> frame times, seconds."),
     PM_METHOD(draw_movie_frame, METH_VARARGS, "draw_movie_frame(movie, index, src, dst, angle, tint, filter)."),
     PM_METHOD(movie_sound, METH_VARARGS, "movie_sound(movie, rate, speed, keep_pitch) -> float32 (frames, channels)."),
     PM_METHOD(play_movie, METH_VARARGS, "play_movie(movie, first, count, refreshes, src, dst, when, sound, gain)."),
     PM_METHOD(close_movie, METH_VARARGS, "close_movie(handle)."),
+    PM_METHOD(start_movie_recording, METH_VARARGS, "start_movie_recording(path, codec, scale, sound)."),
+    PM_METHOD(stop_movie_recording, METH_NOARGS, "stop_movie_recording() -> report."),
     PM_METHOD(set_blend_mode, METH_VARARGS, "set_blend_mode(mode): 0 source-over, 1 additive, 2 copy."),
     PM_METHOD(set_clip, METH_VARARGS, "set_clip([rect]): confine draws to [left, top, right, bottom]; no rect ends it."),
     PM_METHOD(open_offscreen, METH_VARARGS, "open_offscreen(width, height, rgba) -> texture handle."),

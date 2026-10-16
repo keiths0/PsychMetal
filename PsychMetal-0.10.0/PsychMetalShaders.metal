@@ -131,6 +131,10 @@ struct EV{float4 p[[position]];};
 vertex EV evmain(uint vid[[vertex_id]]){
   float2 c[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};
   EV o;o.p=float4(c[vid],0,1);return o;}
+// Movie recording: the finished frame, scaled into the encoder's pixel buffer.
+fragment float4 rfmain(EV in[[stage_in]],texture2d<float> t[[texture(0)]],constant float2&inv[[buffer(0)]]){
+  constexpr sampler s(filter::linear,address::clamp_to_edge);
+  return float4(saturate(t.sample(s,in.p.xy*inv).rgb),1.0);}
 struct EU{float4 gamma;uint mode;uint n;uint2 pad;};
 fragment float4 efmain(EV in[[stage_in]],texture2d<float> t[[texture(0)]],texture2d<float> lut[[texture(1)]],
     constant EU&u[[buffer(0)]]){

@@ -257,3 +257,17 @@ with Capture(pm) as captured:
  assert captured.error=='injected'
 assert pm._environment_observer is None
 print('PASS: atomic persistence/reopen/corruption, strict JSON, share completion/cancellation/file lifetime/iPad anchor, main-thread-only idle collection, close-time environment capture.')
+
+from psychmetaldemos.reports import MovieExport
+with tempfile.TemporaryDirectory() as temp:
+ source=Path(temp)/'stimulus.mp4';source.write_bytes(b'completed movie')
+ export=MovieExport(source)
+ files=export.export(Path(temp)/'share')
+ assert len(files)==1 and files[0].read_bytes()==b'completed movie'
+ source.write_bytes(b'next recording')
+ assert files[0].read_bytes()==b'completed movie'
+ source.unlink()
+ try:export.export(Path(temp)/'again')
+ except ValueError:pass
+ else:raise AssertionError('Missing recording accepted')
+print('PASS: movie sharing snapshots a completed file and preserves it independently of later recordings.')

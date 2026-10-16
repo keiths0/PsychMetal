@@ -10,6 +10,7 @@ import html
 import importlib
 import io
 import json
+import math
 import sys
 import textwrap
 import traceback
@@ -21,7 +22,7 @@ from toga.style.pack import COLUMN, ROW, Pack
 import psychmetal as pm
 
 from .catalogue import CHOICES, GROUPS
-from .reports import Reports
+from .reports import Reports, MovieExport
 from .sharing import ShareSheet
 from .lifecycle import MainThreadCollections
 
@@ -70,6 +71,8 @@ class PsychMetalDemos(toga.App):
         self.last_environment=self.report_store.data['environment']
         self.gc_policy=None
         self.share_sheet=None
+        self.export_share_button=None;self.export_status=None
+        self.movie_path=self.paths.data/'movies/stimulus.mp4' if sys.platform=='ios' else None
         # Static artwork belongs only to the menu, never the timed Metal window.
         ink, muted, accent, paper = '#172231', '#536371', '#146C66', '#F3F5F4'
         art = Path(__file__).parent / 'art'
@@ -111,6 +114,9 @@ class PsychMetalDemos(toga.App):
             'psychmetaldemos.frame_timing': ('gabor', 'Presentation timing'),
             'modulation_match_demo': ('match', 'Phase & frequency · seen or heard'),
             'audio_demo': ('sound', 'Live spectrogram · hold to record'),
+            'movie_demo': ('textures', 'Movie playback · frame by frame'),
+            'record_demo': ('gabor', 'Record a stimulus · replay it'),
+            'export_demo': ('gabor', 'Export a movie · no presentation window'),
         }
         # Put the signature demos first; every catalogue entry keeps its action.
         ordered = sorted(GROUPS, key=lambda item: {'Contrast and motion':0, 'Shapes and textures':1,
@@ -158,7 +164,10 @@ class PsychMetalDemos(toga.App):
             style=Pack(margin=(4,20,4,20),height=48,color=accent))
         self.diagnostic_section.add(self.environment_button)
         self.diagnostic_section.add(self.share_button)
-        listing.add(toga.Button('About, help & privacy' , on_press=self.show_help,
+        self.movie_share_button=toga.Button('Share recorded movie',on_press=self.share_movie,enabled=False,
+            style=Pack(margin=(4,20,4,20),height=48,color=accent))
+        listing.add(self.movie_share_button)
+        listing.add(toga.Button('About, help & privacy', on_press=self.show_help,
             style=Pack(margin=(4,20,12,20), height=48, color=accent)))
         # A short status only. Complete output is retained in its dedicated page.
         self.printed = toga.Label('Choose a demonstration to begin.',
@@ -194,48 +203,80 @@ class PsychMetalDemos(toga.App):
         self.output_button.enabled=available and self.last_output is not None
         self.environment_button.enabled=available
         sharing=self.share_sheet is not None and self.share_sheet.active
+        self.movie_share_button.enabled=(not self.running and not sharing
+                                         and self.movie_path is not None and self.movie_path.is_file())
+        if self.export_share_button is not None:self.export_share_button.enabled=self.movie_share_button.enabled
         self.share_button.enabled=available and not sharing and any(
             self.report_store.data.get(k) for k in ('output','timingHTML','environment'))
 
     def starter(self, title, module, function, arguments, about=''):
         def press(widget, **kwargs):
-            page = toga.Box(style=Pack(direction=COLUMN))
-            page.add(toga.Button('Back to demos', on_press=self.back_to_demos, style=Pack(margin=12, height=48)))
-            content = toga.Box(style=Pack(direction=COLUMN))
-            content.add(toga.Label(title, style=Pack(margin=16, font_size=24, font_weight='bold')))
-            for paragraph in (about, 'Tap with three fingers together to return to the menu at any time.',
-                              'Turn your device before starting to choose portrait or landscape. The demonstration keeps that orientation.'):
-                content.add(toga.Label(textwrap.fill(paragraph, 40), style=Pack(margin=16, font_size=16)))
-            # Settings for this demo, if it has any: a slider each, stopping only on
-            # its values, with the values written under their stops.
+            ink, muted, accent, paper = '#172231', '#536371', '#146C66', '#F3F5F4'
+            page = toga.Box(style=Pack(direction=COLUMN, background_color=paper))
+            page.add(toga.Button('Back to demos', on_press=self.back_to_demos,
+                                 style=Pack(margin=(8, 16, 0, 16), height=44, color=accent)))
+            page.add(toga.Label(title, style=Pack(margin=(8, 16, 16, 16),
+                                                font_size=24, font_weight='bold', color=ink)))
+            # Keep launch visible; settings and notes can scroll on short screens.
+            # Every demo gets a full-width primary button, with settings below.
+            choices = CHOICES.get(title, [])
+            actions = toga.Box(style=Pack(direction=COLUMN, margin=(0, 16, 16, 16)))
             sliders = []
-            for caption, name, values in CHOICES.get(title, []):
-                heading = toga.Label(f'{caption}: {arguments[name]}',
-                                     style=Pack(margin=(12, 16, 0, 16), font_size=16, font_weight='bold'))
-                content.add(heading)
-                slider = toga.Slider(min=values[0], max=values[-1], tick_count=len(values), value=arguments[name],
-                                     style=Pack(margin=(4, 16, 0, 16)))
-                slider.on_change = lambda widget, heading=heading, caption=caption, **kw: setattr(
-                    heading, 'text', f'{caption}: {round(widget.value)}')
-                content.add(slider)
-                # Each number centred under its stop: a thumb's width (28 points) at
-                # each end, where the thumb's centre stops, and even gaps between.
-                numbers = toga.Box(style=Pack(direction=ROW, margin=(0, 16, 8, 16)))
-                for i, v in enumerate(values):
-                    if i:
-                        numbers.add(toga.Box(style=Pack(flex=1)))
-                    numbers.add(toga.Label(str(v), style=Pack(width=28, text_align='center', font_size=13)))
-                content.add(numbers)
-                sliders.append((name, values, slider))
+            settings = None
 
             def chosen():
                 options = dict(arguments)
                 for name, values, slider in sliders:
                     options[name] = min(values, key=lambda v: abs(v - slider.value))
                 return options
-            page.add(toga.ScrollContainer(content=content, horizontal=False, style=Pack(flex=1)))
-            page.add(toga.Button('Start demonstration', on_press=lambda widget, **kw: self.start(title, module, function, chosen()),
-                                 style=Pack(margin=16, height=52)))
+
+            launch = toga.Button('Create movie' if module=='export_demo' else 'Start demo',
+                                 on_press=lambda widget, **kw: self.start(title, module, function, chosen()),
+                                 style=Pack(height=64, font_size=20, font_weight='bold',
+                                            color='#FFFFFF', background_color=accent))
+            actions.add(launch)
+            if choices:
+                settings = toga.Box(style=Pack(direction=COLUMN, margin=(0, 16, 8, 16)))
+                for caption, name, values in choices:
+                    def value_text(value, caption=caption):
+                        return textwrap.fill(f'{caption}: {round(value)}', 40)
+                    heading = toga.Label(value_text(arguments[name]),
+                                         style=Pack(margin_bottom=2, font_size=14, color=ink))
+                    settings.add(heading)
+                    slider = toga.Slider(min=values[0], max=values[-1], tick_count=len(values), value=arguments[name],
+                                         style=Pack(flex=1, height=36))
+                    if sys.platform=='ios':
+                        # Toga exposes no track-colour style. The native default
+                        # unfilled track can disappear against our light page.
+                        from toga_iOS.libs import UIColor
+                        slider._impl.native.minimumTrackTintColor = UIColor.colorWithRed(
+                            20/255, green=108/255, blue=102/255, alpha=1)
+                        slider._impl.native.maximumTrackTintColor = UIColor.colorWithRed(
+                            112/255, green=128/255, blue=140/255, alpha=1)
+                    slider.on_change = lambda widget, heading=heading, value_text=value_text, **kw: setattr(
+                        heading, 'text', value_text(widget.value))
+                    track = toga.Box(style=Pack(direction=ROW, align_items='center', margin_bottom=8))
+                    track.add(toga.Label(str(values[0]), style=Pack(width=24, font_size=12, color=muted)))
+                    track.add(slider)
+                    track.add(toga.Label(str(values[-1]), style=Pack(width=24, font_size=12, color=muted,
+                                                                  text_align='right')))
+                    settings.add(track)
+                    sliders.append((name, values, slider))
+            page.add(actions)
+
+            content = toga.Box(style=Pack(direction=COLUMN, background_color=paper))
+            if settings is not None:
+                content.add(settings)
+            content.add(toga.Label('How to use', style=Pack(margin=(8, 16, 12, 16),
+                                                         font_size=15, font_weight='bold', color=ink)))
+            instructions=(about, 'Tap Create movie. Nothing is presented onscreen while the movie is created. When it finishes, Movie ready lets you play it or share a copy.') if module=='export_demo' else (about, 'Tap with three fingers together to return to the menu at any time.',
+                              'Turn your device before starting to choose portrait or landscape. The demonstration keeps that orientation.')
+            for paragraph in instructions:
+                if paragraph:
+                    content.add(toga.Label(textwrap.fill(paragraph, 40),
+                                           style=Pack(margin=(0, 16, 16, 16), font_size=15, color=muted)))
+            page.add(toga.ScrollContainer(content=content, horizontal=False,
+                                          style=Pack(flex=1, background_color=paper)))
             self.main_window.content = page
         return press
 
@@ -271,7 +312,7 @@ class PsychMetalDemos(toga.App):
             button.enabled = False
         self.report_button.enabled = False
         self.output_button.enabled = False
-        self.environment_button.enabled=self.share_button.enabled=False
+        self.environment_button.enabled=self.share_button.enabled=self.movie_share_button.enabled=False
         self.printed.text = f'{title}: running...'
         self.kept = Kept(sys.stdout, self.run_diagnostics), Kept(sys.stderr)
         self.streams = sys.stdout, sys.stderr
@@ -279,6 +320,14 @@ class PsychMetalDemos(toga.App):
 
         def demo():
             options = dict(arguments)
+            if module == "movie_demo":
+                options.setdefault("path",Path(__file__).parent / "assets" / "sample_movie.mp4")
+            elif module in ("record_demo","export_demo"):
+                directory = self.paths.data / "movies"
+                directory.mkdir(parents=True, exist_ok=True)
+                self.movie_path=directory / "stimulus.mp4"
+                options.update(path=self.movie_path, seconds=3.0)
+                if module=="record_demo":options.update(codec="h264",scale=0.5)
             if module == "blob_array_demo":
                 options["diagnostic"] = self.run_diagnostics
                 options["inspect_frames"] = False
@@ -300,11 +349,24 @@ class PsychMetalDemos(toga.App):
         """Called on the demo's thread: the page is changed on the main one."""
         sys.stdout, sys.stderr = self.streams
         text = title
+        movie=None
+        if error is None and isinstance(result,dict) and result.get('exportedMovie'):
+            try:
+                path=Path(result['path'])
+                if self.movie_path is None or path.resolve()!=self.movie_path.resolve() or not path.is_file() or path.stat().st_size<=0:
+                    raise RuntimeError('Export returned without a readable saved movie.')
+                movie={key:float(result[key]) for key in ('frames','duration','width','height')}
+                if not all(math.isfinite(value) and value>0 for value in movie.values()):
+                    raise RuntimeError('Export returned invalid movie information.')
+                print(f"Export complete: {movie['frames']:.0f} frames, {movie['duration']:.3f} s, {path.stat().st_size} bytes.")
+            except Exception as failure:
+                error=failure;movie=None
         try:
             text += '\n\n' + ''.join(self.kept[0].parts + self.kept[1].parts).strip()
             if isinstance(error, KeyboardInterrupt):
                 text += '\n\nStopped.'
             elif error is not None:
+                traceback.print_exception(error, file=sys.stderr)
                 text += '\n\nThe demonstration could not finish. Please try again.\n' + str(error)
                 if self.run_diagnostics:
                     text += '\n' + ''.join(traceback.format_exception(error)[-8:]).strip()
@@ -316,9 +378,10 @@ class PsychMetalDemos(toga.App):
             environment=capture.report if capture is not None else None
             if capture is not None and capture.error:text+='\nEnvironment report unavailable: '+capture.error
             text=bundle_relative(text)
-            self.loop.call_soon_threadsafe(self.show, text.strip(), report if isinstance(report, str) else None,environment)
+            self.loop.call_soon_threadsafe(self.show, text.strip(), report if isinstance(report, str) else None,environment,
+                                               error is not None and not isinstance(error, KeyboardInterrupt),movie)
 
-    def show(self, text, report=None, environment=None):
+    def show(self, text, report=None, environment=None, failed=False, movie=None):
         self.last_output = text
         self.output_button.style.display = 'pack'
         self.printed.text = textwrap.fill(text.split('\n',1)[0] + ' — output ready.', 42)
@@ -333,9 +396,31 @@ class PsychMetalDemos(toga.App):
         try:self.report_store.update(output=text,timing=report,environment=environment)
         except OSError as error:self.printed.text='Report kept for this session; saving failed: '+str(error)
         self.diagnostic_changed(self.diagnostic_switch)
-        if report and self.diagnostic_switch.value:
+        if failed:
+            self.show_output()
+        elif movie is not None:
+            self.show_movie_saved(movie)
+        elif report and self.diagnostic_switch.value:
             self.show_report()
         if self.gc_policy is not None:self.gc_policy.collect()
+
+    def show_movie_saved(self, movie):
+        page=toga.Box(style=Pack(direction=COLUMN))
+        content=toga.Box(style=Pack(direction=COLUMN,margin=16))
+        content.add(toga.Label('Movie ready',style=Pack(font_size=26,font_weight='bold',margin_bottom=16)))
+        detail=f"{movie['duration']:.2f} seconds · {movie['frames']:.0f} frames · {movie['width']:.0f} × {movie['height']:.0f}"
+        content.add(toga.Label(textwrap.fill(detail,35),style=Pack(font_size=17,margin_bottom=16)))
+        content.add(toga.Label(textwrap.fill('The movie was created without showing the stimulus onscreen. Play it here, or share it to save a copy.',38),style=Pack(font_size=16,margin_bottom=20)))
+        content.add(toga.Button('Play exported movie',on_press=lambda widget,**kw:self.start('Exported movie','movie_demo','movie_demo',dict(path=self.movie_path,sound='off')),style=Pack(height=52,margin_bottom=12)))
+        self.export_share_button=toga.Button('Share movie',on_press=self.share_movie,style=Pack(height=52,margin_bottom=12))
+        self.export_share_button.enabled=self.movie_share_button.enabled
+        content.add(self.export_share_button)
+        self.export_status=toga.Label('Saved on this device.',style=Pack(font_size=16,margin_bottom=16))
+        content.add(self.export_status)
+        content.add(toga.Button('Back to demos',on_press=self.back_to_demos,style=Pack(height=48)))
+        page.add(toga.ScrollContainer(content=content,horizontal=False,style=Pack(flex=1)))
+        self.main_window.content=page
+        self.printed.text='Movie saved. Use Share recorded movie to save a copy.'
 
     def show_output(self, widget=None, **kwargs):
         if self.last_output is None:
@@ -395,16 +480,31 @@ class PsychMetalDemos(toga.App):
             self.share_button.enabled=True
         except Exception as error:self.printed.text='Could not open device report: '+str(error)
 
+    def share_movie(self, widget=None, **kwargs):
+        if self.running or self.movie_path is None or (self.share_sheet is not None and self.share_sheet.active):return
+        try:
+            if self.share_sheet is None:self.share_sheet=ShareSheet(self.loop)
+            self.share_sheet.present(self.main_window,MovieExport(self.movie_path),self.movie_shared)
+            self.diagnostic_changed(self.diagnostic_switch)
+        except Exception as error:
+            self.movie_shared(False,str(error))
+
+    def movie_shared(self, successful, error):
+        self.diagnostic_changed(self.diagnostic_switch)
+        self.printed.text=('Could not share movie: '+str(error) if error else
+                           'Movie shared.' if successful else 'Sharing cancelled. Movie is still available.')
+        if self.export_status is not None:self.export_status.text=self.printed.text
+
     def share_reports(self, widget=None, **kwargs):
         if self.running:return
         try:
             if self.share_sheet is None:self.share_sheet=ShareSheet(self.loop)
             self.share_sheet.present(self.main_window,self.report_store,self.shared)
-            self.share_button.enabled=False
+            self.diagnostic_changed(self.diagnostic_switch)
         except Exception as error:self.show_share_error(error)
 
     def shared(self, successful, error):
-        self.share_button.enabled=True
+        self.diagnostic_changed(self.diagnostic_switch)
         if error:
             self.show_share_error(error)
         else:

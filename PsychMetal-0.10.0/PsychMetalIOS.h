@@ -343,6 +343,32 @@ static void iosCloseWindow(void) {
     });
 }
 
+// Offscreen export does not replace the app window or start a display link.
+// Keep the same foreground-only GPU contract and restore the idle-timer state.
+static id iosExportObserver=nil;
+static bool iosExportActive=false,iosExportIdleWas=false;
+static void iosOpenExport(void) {
+    __block bool active=false;
+    onMainSync(^{
+        if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
+        iosExportIdleWas=UIApplication.sharedApplication.idleTimerDisabled;
+        UIApplication.sharedApplication.idleTimerDisabled=YES;
+        iosExportActive=true;iosLeftFront.store(false);active=true;
+        iosExportObserver=[NSNotificationCenter.defaultCenter
+            addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil
+            usingBlock:^(NSNotification *note){(void)note;iosLeftFront.store(true);}];
+    });
+    if(!active) failOpen(pm::kErrGeneral,@"Keep the app in front while exporting Metal frames.");
+}
+static void iosCloseExport(void) {
+    onMainSync(^{
+        if(!iosExportActive) return;
+        if(iosExportObserver) [NSNotificationCenter.defaultCenter removeObserver:iosExportObserver];
+        iosExportObserver=nil;iosExportActive=false;
+        UIApplication.sharedApplication.idleTimerDisabled=iosExportIdleWas;
+    });
+}
+
 static void iosRequireFront(void) {
     if (iosLeftFront.load())
         fail("The app is no longer in front, so nothing more can be shown: Close the window.");

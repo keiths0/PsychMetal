@@ -1,3 +1,43 @@
+# PsychMetal 0.10.0 validation — October 15, 2026
+
+- Available software regressions passed with explicit --skip-media-fixtures:
+  scripted inventory 286/286 over 106 commands and readback 46/46; host bindings,
+  demos, bounded failure paths and native ASan/UBSan/TSan fixtures passed.
+- Native engine checks passed against macOS, iOS device and ARM64 simulator SDKs.
+  Octave, MATLAB and Python 3.15 Mac modules rebuilt successfully. Both iOS
+  wheels and the generic iPhone app build successfully; bundle/privacy preflight
+  passed with 88 frameworks and fresh source/assets.
+- The user confirmed iPhone sound recording, standalone export, recorded-movie
+  replay and the revised demo launch pages, including Hidden ring controls.
+  These are functional checks by eye/ear, not physical onset measurements.
+- UI navigation checks passed after the final layout changes, including sharing
+  cancellation, Start actions and Hidden ring option forwarding.
+
+## Explicit remaining limits
+
+This execution environment exposes no Metal GPU or physical audio/display
+hardware. GPU pixel fixtures compile but skip execution here. Real AVFoundation
+encoding fixtures failed here (including InvalidSession/“Cannot Encode”); they
+were explicitly omitted from the otherwise passing software suite. The cause
+has not been established. A converter failure preserved its prior destination
+and cleaned its temporary output; successful conversion is not certified.
+
+Whole-movie preload/conversion on real codecs, 4K/6K throughput, 50 consecutive
+Mac opens, capture/tearing comparisons and physical Mac endpoint-removal recovery
+remain unverified. Latest engine changes do not inherit certification from older
+phone builds. The broader iPad/monitor/refresh-rate matrix remains incomplete.
+No photodiode, loopback or audiovisual measurement probes were added or required
+for this release; software timestamps do not certify emitted light/sound timing.
+Unsigned app builds/privacy checks do not constitute App Store validation.
+
+Octave's supplied binary uses Octave 11.3 libraries requiring macOS 26;
+MATLAB/Python target macOS 14+. The toolbox iOS wheels target iOS 15+, while the
+phone demo app requires iOS 17+. Historical 0.9.0 evidence follows; it must not
+be read as acceptance of 0.10.0. Remote 0.10.0 CI is still pending publication.
+See AUDIT-0.10.0.md, WISHLIST-0.10.0.md and DEVELOPMENT-0.10.0.md for details.
+
+---
+
 # PsychMetal 0.9.0 validation — local acceptance, October 12, 2026
 
 Final rebuilt Mac binaries passed the checks recorded below, and Keith reported
@@ -102,3 +142,20 @@ iPhone/iPad in both orientations, and background/resume. The supplied Octave
 binary uses Octave 11.3 libraries requiring macOS 26; MATLAB/Python target
 macOS 14+. Video is deferred to 0.10.0. GitHub release and Apple submission are
 separate.
+
+## 0.10.0 wishlist coding pass — October 15, 2026
+
+Current source verification: all available software regressions passed with
+explicit --skip-media-fixtures (scripted inventory 286/286 over 106 commands;
+readback 46/46). Mac/iOS/simulator SDK and portable declaration checks pass.
+New native fixtures exercise private uploads, float packing, preload/cache
+limits, movie report progression, sample-event timing and Mac audio recovery
+under sanitizers. Mac binaries and iOS wheels were rebuilt; the generic iPhone
+app builds and passes bundle/privacy preflight (88 frameworks).
+
+These results do not certify real GPU pixels, successful conversion/codec
+throughput, capture/tearing behavior, 50-open readiness, physical device recovery
+or physical sound/light timing. A real conversion failure preserved the previous
+destination and removed its temporary output. Hardware acceptance remains
+required; excluded measurement probes were not added or changed. See
+WISHLIST-0.10.0.md and DEVELOPMENT-0.10.0.md for APIs, evidence and logs.

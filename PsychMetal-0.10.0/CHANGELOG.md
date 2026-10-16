@@ -1,38 +1,55 @@
 # Changelog
 
-## 0.10.0 — development
+## 0.10.0 — October 15, 2026
 
-- Arcs, as Screen's: `FillArc` (a wedge), `FrameArc` (a band of the edge, pen
-  width pixels wide, no radii) and `DrawArc` (one pixel), in MATLAB, Octave and
-  Python (`fill_arc`, `frame_arc`, `draw_arc`). Angles in degrees, 0 at the top,
-  clockwise; a negative sweep runs the other way; a 4xN rect with one angle or one
-  per rect. Drawn on the GPU as shape kind 8, analytically and antialiased, in
-  the same pass as ovals. `tests/test_arc_metal.mm` checks the pixels against the
-  geometry in double precision, and a whole turn against the oval. The shapes
-  demo draws its arcs with them.
-- A display with a variable refresh rate (ProMotion) no longer opens at a
-  provisional 60 Hz: Open takes the panel's maximum from AppKit
-  (`NSScreen.maximumFramesPerSecond`) and warns that timing work wants a fixed
-  rate. Not yet run on a ProMotion Mac.
-- Phone app: Noise through a mask is no longer on the menu; the Mac keeps it as
-  an example of the procedural stimulus calls.
-- Movies (MOVIES.md), in MATLAB, Octave and Python: `OpenMovie`,
-  `MovieFrameTimes`, `DrawMovieFrame`, `PlayMovie`, `RefreshesPerFrame`,
-  `CloseMovie` (`open_movie`, ...). Any file AVFoundation reads (.mov, .mp4,
-  .m4v; H.264, HEVC, ProRes, ...), decoded by the system with `AVAssetReader`,
-  every frame in order, handed to Metal through `CVMetalTextureCache` without a
-  copy. `DrawMovieFrame` draws one frame as `DrawTexture` draws a texture.
-  `PlayMovie` shows every frame for the same whole number of refreshes (the
-  nearest to refresh rate over frame rate, a half rounded up), never drops,
-  repeats or alters one, and reports what the display reported. The movie's
-  sound plays through PsychMetal's audio from the first frame's refresh: only at
-  the movie's own rate by default, or resampled or time-stretched (AVFoundation's
-  spectral algorithm) to follow frames shown at another rate. A track meant to be
-  shown turned (a phone's portrait video) is drawn turned. `make test` writes
-  numbered test movies (`tests/make_test_movie.mm`, AVAssetWriter) in five forms
-  and reads each back; the inventory tests check frame numbers in the pixels
-  drawn. New demo: `PsychMetalMovieDemo`, `python/movie_demo.py` (Mac only for
-  now). Decode speed for 4K and 6K movies is not yet measured.
+- Movie playback through AVFoundation, shared by Python, MATLAB, Octave and
+  iOS: frame-indexed drawing, whole-refresh native playback, movie sound,
+  orientation handling and timestamp reports. A bounded lookahead cache
+  defaults to up to eight frames within a 256 MiB logical pixel budget.
+  PrepareMovie/prepare_movie configures lookahead or full preload with an
+  explicit budget. TranscodeMovie/transcode_movie creates all-intra movies.
+  MovieInfo adds keyframe spacing; playback reports sample/presentation A/V
+  offsets when confirmed timestamps are available. See MOVIES.md.
+- Stimulus recording includes generated audio, scaling, H.264/HEVC/ProRes,
+  held-frame timestamps, bounded writer waits and atomic destination replacement.
+  Opt-in virtual recording excludes encoder/presentation waits from the logical
+  clock and supports Flip, queued/native playback and generated audio.
+  Standalone open_export/OpenExport renders with Metal without a display window.
+  See OFFSCREEN-EXPORT.md. Live recording remains the low-level default.
+- Phone demos add bundled movie playback, recording/replay and standalone movie
+  export with explicit sharing. Preview follows movie time and reports skipped
+  expired preview frames; the saved recording and strict native PlayMovie do
+  not discard frames. Start buttons are prominent and full width; settings
+  precede the scrolling notes. Hidden ring sliders show both track segments,
+  current values and range endpoints.
+- Audio interruption recovery preserves saved recordings/sounds while ending
+  stale voices. iOS resumes only when permitted; Mac device removal can recover
+  to an available endpoint with preserved client rates. Timing is invalidated
+  after route changes until CloseAudio/OpenAudio. Audio taps use acknowledged
+  lifetime handoffs; callback backlog and writer waits are bounded. See AUDIO.md.
+- Static textures use private GPU storage with staged uploads. Float32 uploads
+  keep full precision on GPUs supporting filtered 32-bit textures; others use
+  half floats. Texture snapshots retain GPU ownership. Close frees packing
+  buffers; frame resource scans and repeated movie-prefetch jobs avoid redundant
+  work. See AUDIT-0.10.0.md.
+- Startup confirms consecutive actual presentations without a fixed one-second
+  delay. Mac OpenWindow/open_window accepts optional captureDisplay/
+  capture_display for comparison; capture remains enabled by default. Diagnostic
+  adds displayCaptured (26 fields total; frame history remains 14 columns).
+- Analytic FillArc, FrameArc and DrawArc have matching Python APIs. ProMotion
+  Mac opening uses the panel maximum rather than a provisional 60 Hz; fixed
+  refresh remains preferred for timing experiments.
+- Scheduled flips preserve frame ordering across held frames and tolerate small
+  refresh-grid rounding differences. Control-C/Command-period in the stimulus
+  window interrupts playback and allows caller cleanup.
+- Software verification covers 286 inventory checks over 106 commands, 46
+  readback checks, native sanitizer fixtures and all three Apple SDK targets.
+  Mac modules, iOS wheels and the device app build successfully. The phone's
+  recording/replay/export and revised UI were functionally checked by the user.
+  Real codec conversion, GPU pixels in this execution environment, long-run
+  throughput, 50-open startup and physical device recovery remain unverified.
+  No physical timing certification or new measurement probes are included.
+  See VALIDATION.md for the precise acceptance limits.
 
 ## 0.9.0 — 2026-10-12
 

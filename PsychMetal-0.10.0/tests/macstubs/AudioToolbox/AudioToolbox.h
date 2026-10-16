@@ -15,7 +15,7 @@ struct AudioBufferList { UInt32 mNumberBuffers; AudioBuffer mBuffers[1]; };
 struct AudioStreamBasicDescription { Float64 mSampleRate; UInt32 mFormatID, mFormatFlags, mBytesPerPacket, mFramesPerPacket,
                                      mBytesPerFrame, mChannelsPerFrame, mBitsPerChannel, mReserved; };
 struct AudioStreamPacketDescription { int64_t mStartOffset; UInt32 mVariableFramesInPacket, mDataByteSize; };
-enum { kAudioFormatLinearPCM = 0x6c70636d, kAudioFormatFlagsNativeFloatPacked = 9, kAudioFormatFlagIsNonInterleaved = 32 };
+enum { kAudioFormatMPEG4AAC = 0x61616320, kAudioFormatFlagIsFloat = 1, kAudioFormatFlagIsPacked = 8, kAudioFormatLinearPCM = 0x6c70636d, kAudioFormatFlagsNativeFloatPacked = 9, kAudioFormatFlagIsNonInterleaved = 32 };
 struct AudioComponentDescription { OSType componentType, componentSubType, componentManufacturer; UInt32 componentFlags, componentFlagsMask; };
 typedef struct OpaqueAudioComponent *AudioComponent;
 typedef struct ComponentInstanceRecord *AudioComponentInstance;

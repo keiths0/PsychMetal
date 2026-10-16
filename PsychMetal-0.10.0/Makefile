@@ -6,7 +6,7 @@ ENGINE := PsychMetalEngine.mm
 SHARED := PsychMetalShared.cpp
 MEX_FRONTEND := PsychMetalMex.cpp
 PY_FRONTEND := PsychMetalPython.cpp
-HEADERS := PsychMetalDisplayLink.h PsychMetalCustomShader.h PsychMetalLiveTimeline.h PsychMetalKeyframes.h PsychMetalTimeline.h PsychMetalReadback.h PsychMetalIOS.h PsychMetalEngine.h PsychMetalInternal.h PsychMetalKeyboardQueue.h PsychMetalShaders.h PsychMetalAudio.h PsychMetalAudioHost.h PsychMetalAudioEngine.h PsychMetalMovie.h
+HEADERS := PsychMetalDisplayLink.h PsychMetalCustomShader.h PsychMetalLiveTimeline.h PsychMetalKeyframes.h PsychMetalTimeline.h PsychMetalReadback.h PsychMetalIOS.h PsychMetalEngine.h PsychMetalInternal.h PsychMetalKeyboardQueue.h PsychMetalShaders.h PsychMetalAudio.h PsychMetalAudioHost.h PsychMetalAudioEngine.h PsychMetalMovie.h PsychMetalRecord.h PsychMetalRecordingClock.h PsychMetalOfflineAudio.h
 # The built-in shaders, compiled for the Mac at build time and embedded in the
 # engine (tests/build_metallib.py). In the build's own directory, never the sources'.
 SHADER_DIR := build/macosx
@@ -16,7 +16,7 @@ MATLAB_MEX := PsychMetalCore.mexmaca64
 MATLAB_ROOT ?= /Applications/MATLAB_R2026a.app
 PYTHON ?= python3
 SDKROOT := $(shell xcrun -sdk macosx --show-sdk-path 2>/dev/null)
-# No OpenGL and no IOSurface: nothing in the engine touches either.
+# Native Metal presentation; movie buffers are shared through Core Video.
 FRAMEWORKS := -framework Cocoa -framework Metal -framework QuartzCore -framework CoreGraphics -framework Carbon -framework CoreText -framework IOKit -framework AudioToolbox -framework CoreAudio -framework AVFoundation -framework CoreMedia -framework CoreVideo
 RELEASE_FLAGS := -O2 -DNDEBUG -Wall -Wextra -Wpedantic
 DIST_DIR := dist/PsychMetal
