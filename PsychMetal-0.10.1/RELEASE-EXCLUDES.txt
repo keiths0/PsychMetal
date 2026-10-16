@@ -1,0 +1,3 @@
+# Local reports, experimental probes and release work areas are preserved locally.
+probes/
+validation-0.10.1.txt

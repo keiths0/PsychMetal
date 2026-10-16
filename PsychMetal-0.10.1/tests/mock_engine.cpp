@@ -1,0 +1,1625 @@
+// mock_engine.cpp — a scripted implementation of PsychMetalEngine.h for testing
+// the MATLAB/Octave and Python front ends without a Mac or a GPU.
+// SPDX-License-Identifier: MIT
+//
+// Linked with the real PsychMetalShared.cpp (scalar conventions, image packing,
+// noise) and the real PMKeyboardQueue. Everything that needs Metal or AppKit is
+// simulated: one display, textures kept as packed half floats, and a vsync grid
+// on the real monotonic clock, so Flip really waits for the next refresh.
+//
+// Environment (read at openSession / setMode):
+//   PM_MOCK_DISPLAY  "WIDTHxHEIGHT@HZ"   default 800x600@60
+//   PM_MOCK_DROP     "N"                every Nth stimulus frame is reported as dropped
+//                    (submitted, never shown). Default 0: none.
+//   PM_MOCK_MOUSE    "CLICK_AFTER,DX,DY" the mouse moves (DX, DY) per Mouse call
+//                    and the left button is down once CLICK_AFTER frames have
+//                    been flipped (-1: never). Default -1,0,0. At that frame a
+//                    finger also touches the screen there, moves and lifts.
+// Readback (OpenOptions::readback): a small software renderer stands in for the
+// GPU, so GetImage returns real pixels and the readback checks run here too.
+// It draws what those checks use and nothing else: the background, FillRect,
+// unrotated textures with nearest sampling and polygons without antialiasing,
+// blended source-over, additively or copied as the engine's pipelines are
+// configured, inside the clip rect, into the window or an offscreen window.
+// Frames queued ahead are rendered when queued and given the presentation times
+// a display on schedule would report; there is no presenter thread here. Without linearization
+// every draw is rounded to the frame's 8 or 10 bits, as a GPU drawing into the
+// drawable rounds it; with it, draws accumulate unrounded and the frame is
+// encoded and rounded once. Text is a block per character (see DrawText below).
+// Other shapes, rotated textures and bilinear filtering leave the frame untouched.
+//   PM_MOCK_LINK     "LANES,GBPS"        the link LinkInfo reports. Default: unknown.
+//   PM_MOCK_INTERRUPT "N"               Control-C is pressed in the window after N flips: the
+//                    next Flip fails with PsychMetal:Interrupted, as on a Mac.
+//   PM_MOCK_KEYS     "USAGE:FROM-TO,..." HID usage USAGE reads as down in Keys while FROM <=
+//                    frames flipped since open < TO. Read at each Keys. Default: no keys.
+//   PM_MOCK_MOVIE    "WxH@FPS,FRAMES,SOUNDRATE"  the movie OpenMovie finds at any path
+//                    without "missing" in it. Default 160x96@30,90,48000; SOUNDRATE 0:
+//                    no sound. Its frames are those of tests/make_test_movie.mm: the top
+//                    half 16 bars, bar i white if bit i of the frame number is set; the
+//                    bottom half red k mod 256, green 255 - k mod 256, blue 64. Its sound
+//                    is that of the test movies too: 440 Hz at 0.2, a 1 ms click at 0.9 each second.
+// Test-only readbacks through diagnostic(): lastShapeRect holds the packed
+// RGBA of texel (row 1, column 0) of the last uploaded image, lastShapeColor
+// that of (row 0, column 1), so a transposed upload is visible to the tests.
+#include "PsychMetalEngine.h"
+#include "PsychMetalRecordingClock.h"
+#include "PsychMetalTimeline.h"
+#include "PsychMetalLiveTimeline.h"
+#include "PsychMetalKeyframes.h"
+#include <atomic>
+#include "PsychMetalInternal.h"
+#include "PsychMetalKeyboardQueue.h"
+
+#include <cstring>
+#include <chrono>
+#include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <algorithm>
+#include <map>
+#include <memory>
+#include <set>
+#include <vector>
+#include <thread>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#endif
+
+namespace {
+
+[[noreturn]] void fail(const char *s) { throw pm::Error(pm::kErrGeneral, s); }
+[[noreturn]] void failWith(const char *id, const char *fmt, ...) {
+    char text[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+    throw pm::Error(id, text);
+}
+
+pm::HostHooks hooks;
+pm::recording::Clock recordingClock;
+
+double clockNow() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+struct Display { double w = 800, h = 600, hz = 60; } display;
+void readDisplay() {
+    display = Display{};
+    if (const char *e = getenv("PM_MOCK_DISPLAY")) {
+        double w, h, hz = 60;
+        int n = sscanf(e, "%lfx%lf@%lf", &w, &h, &hz);
+        if (n >= 2) { display.w = w; display.h = h; display.hz = hz; }
+    }
+}
+
+bool prepared = false, open = false, closing = true, pinned = false;
+double bg[4] = {0, 0, 0, 1};
+uint64_t nextToken = 1, session = 0, nextHandle = 1;
+size_t drawCount = 0;
+double ifi = 1.0 / 60, gridTime = NAN;
+uint64_t gridSamples = 0, confirmed = 0, shapesAppended = 0, shapesEncoded = 0, texturesDrawn = 0, texturesMade = 0;
+std::vector<pm::StartupRecord> startup;
+std::vector<pm::FrameRecord> history;
+struct Texture { pm::internal::ImageShape shape; std::vector<__fp16> texels; bool bytes = false; bool offscreen = false; };
+std::map<uint64_t, Texture> textures;
+static std::map<uint64_t,int> mockImagePipelines;static uint64_t mockNextImagePipeline=1;
+std::vector<__fp16> scratch;
+// The renderer here works in half floats, so a byte image is widened: v becomes v / 255.
+pm::internal::ImageShape packTexels(const pm::ArrayView &image, std::vector<__fp16> &texels) {
+    if (!pm::internal::isByteImage(image)) return pm::internal::packImage(image, texels);
+    pm::internal::ImageShape shape;
+    std::vector<uint8_t> bytes;
+    const uint8_t *b = pm::internal::packBytes(image, bytes, shape);
+    size_t n = shape.height * shape.width * (shape.channels == 1 ? 1 : 4);
+    texels.resize(n);
+    for (size_t i = 0; i < n; i++) texels[i] = (__fp16)(b[i] / 255.0);
+    return shape;
+}
+pm::Rect4 probeA{}, probeB{};
+
+// Readback.
+struct DrawItem {
+    bool procedural = false;
+    std::array<double,15> stimulus{};
+    bool texture = false;
+    int blend = 0;                            // 0 source-over, 1 additive, 2 copy
+    int clip[4] = {};                         // [left top right bottom]; all zero: none
+    double rect[4] = {}, color[4] = {};       // FillRect and polygons: pixels, RGBA 0..1
+    std::shared_ptr<Texture> image;           // texture: a snapshot taken when queued
+    double src[4] = {}, dst[4] = {}, tint[4] = {};
+    std::vector<double> polygon;              // x, y pairs; rect is then its bounds
+    double pen = 0;                           // polygon: 0 filled, else the outline's width
+};
+bool readable = false, haveFrame = false;
+std::vector<DrawItem> drawItems;
+std::vector<double> canvas;                   // RGBA 0..1, row-major, while a frame is drawn
+std::vector<uint16_t> frame;                  // RGBA in the frame's levels, row-major
+uint64_t frameToken = 0;
+int bits = 8, blendNow = 0, clipNow[4] = {};
+// The offscreen window drawn into (0: the window), and where its waiting draws begin.
+uint64_t targetHandle = 0;
+size_t targetItemBase = 0, targetCountBase = 0;
+std::set<uint64_t> windowDrew;             // offscreen windows the window has draws of waiting
+void stamp(DrawItem &it) { it.blend = blendNow; for (int i = 0; i < 4; i++) it.clip[i] = clipNow[i]; }
+int gammaMode = 0;                            // 0 off, 1 power, 2 table
+double exponent[3] = {1, 1, 1};
+std::vector<double> gammaTable;               // N x 3, as the half floats a GPU would hold
+
+double levels() { return bits == 10 ? 1023.0 : 255.0; }
+double clamp01(double v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+double rounded(double v) { return std::nearbyint(clamp01(v) * levels()) / levels(); }
+
+// The display value of a linear one, as the engine's last pass computes it.
+double encoded(double v, int c) {
+    v = clamp01(v);
+    if (gammaMode == 1) return std::pow(v, exponent[c]);
+    if (gammaMode == 2) {
+        size_t n = gammaTable.size() / 3;
+        double at = v * (double)(n - 1);
+        size_t lo = (size_t)std::floor(at), hi = lo + 1 < n ? lo + 1 : n - 1;
+        double f = at - (double)lo;
+        return gammaTable[lo * 3 + (size_t)c] * (1 - f) + gammaTable[hi * 3 + (size_t)c] * f;
+    }
+    return v;
+}
+
+// One pixel of a surface, blended by the factors the engine gives the GPU.
+// `exact` surfaces (half-float targets) keep what is drawn; the others round
+// every draw to the frame's levels, as a drawable does.
+void blendPixel(double *p, const double rgba[4], const pm::internal::Blend &blend, bool exact) {
+    const double a = clamp01(rgba[3]);
+    auto factor = [a](pm::internal::BlendFactor f) {
+        return f == pm::internal::kBlendZero ? 0.0 : f == pm::internal::kBlendOne ? 1.0
+             : f == pm::internal::kBlendSourceAlpha ? a : 1.0 - a;
+    };
+    for (int c = 0; c < 4; c++) {
+        double v = c < 3 ? rgba[c] * factor(blend.sourceRGB) + p[c] * factor(blend.destinationRGB)
+                         : rgba[3] * factor(blend.sourceAlpha) + p[3] * factor(blend.destinationAlpha);
+        p[c] = exact ? v : rounded(v);
+    }
+}
+
+// Is the centre of pixel (x, y) inside the polygon (even-odd), or within half the
+// pen of its outline?
+bool polygonCovers(const DrawItem &it, double px, double py) {
+    size_t n = it.polygon.size() / 2;
+    if (it.pen > 0) {
+        for (size_t i = 0; i < n; i++) {
+            double ax = it.polygon[2 * i], ay = it.polygon[2 * i + 1];
+            double bx = it.polygon[2 * ((i + 1) % n)], by = it.polygon[2 * ((i + 1) % n) + 1];
+            double ux = bx - ax, uy = by - ay, len2 = ux * ux + uy * uy;
+            double t = len2 > 0 ? ((px - ax) * ux + (py - ay) * uy) / len2 : 0;
+            t = t < 0 ? 0 : t > 1 ? 1 : t;
+            double ex = px - (ax + t * ux), ey = py - (ay + t * uy);
+            if (ex * ex + ey * ey <= it.pen * it.pen / 4) return true;
+        }
+        return false;
+    }
+    bool inside = false;
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+        double xi = it.polygon[2 * i], yi = it.polygon[2 * i + 1], xj = it.polygon[2 * j], yj = it.polygon[2 * j + 1];
+        if ((yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+}
+
+// Draw items [first, last) onto a W x H surface of RGBA doubles: the window's
+// frame, or an offscreen window (`offscreen`), which holds colour x alpha.
+void drawOnto(std::vector<double> &surface, size_t W, size_t H, size_t first, size_t last, bool exact, bool offscreen) {
+    for (size_t k = first; k < last; k++) {
+        const DrawItem &it = drawItems[k];
+        const double *r = it.texture ? it.dst : it.rect;
+        long x0 = std::lrint(std::ceil(r[0] - 0.5)), x1 = std::lrint(std::ceil(r[2] - 0.5));
+        long y0 = std::lrint(std::ceil(r[1] - 0.5)), y1 = std::lrint(std::ceil(r[3] - 0.5));
+        long cx0 = 0, cy0 = 0, cx1 = (long)W, cy1 = (long)H;
+        if (it.clip[2] > it.clip[0] && it.clip[3] > it.clip[1]) {
+            cx0 = std::max<long>(cx0, it.clip[0]); cy0 = std::max<long>(cy0, it.clip[1]);
+            cx1 = std::min<long>(cx1, it.clip[2]); cy1 = std::min<long>(cy1, it.clip[3]);
+        }
+        for (long y = std::max(y0, cy0); y < y1 && y < cy1; y++)
+            for (long x = std::max(x0, cx0); x < x1 && x < cx1; x++) {
+                double rgba[4];
+                if (!it.polygon.empty()) {
+                    if (!polygonCovers(it, x + 0.5, y + 0.5)) continue;
+                    for (int c = 0; c < 4; c++) rgba[c] = it.color[c];
+                } else if (!it.texture) {
+                    for (int c = 0; c < 4; c++) rgba[c] = it.color[c];
+                } else {
+                    const Texture &t = *it.image;
+                    double u = it.src[0] + (x + 0.5 - r[0]) / (r[2] - r[0]) * (it.src[2] - it.src[0]);
+                    double v = it.src[1] + (y + 0.5 - r[1]) / (r[3] - r[1]) * (it.src[3] - it.src[1]);
+                    long tx = (long)std::floor(u * (double)t.shape.width), ty = (long)std::floor(v * (double)t.shape.height);
+                    tx = tx < 0 ? 0 : tx >= (long)t.shape.width ? (long)t.shape.width - 1 : tx;
+                    ty = ty < 0 ? 0 : ty >= (long)t.shape.height ? (long)t.shape.height - 1 : ty;
+                    size_t oc = t.shape.channels == 1 ? 1 : 4;
+                    const __fp16 *texel = &t.texels[((size_t)ty * t.shape.width + (size_t)tx) * oc];
+                    for (int c = 0; c < 4; c++)
+                        rgba[c] = (oc == 1 ? (c < 3 ? (double)texel[0] : 1.0) : (double)texel[c]) * it.tint[c];
+                    // As the shader: the tint's alpha scales all of an offscreen window's colour.
+                    if (t.offscreen) for (int c = 0; c < 3; c++) rgba[c] *= it.tint[3];
+                }
+                blendPixel(&surface[((size_t)y * W + (size_t)x) * 4], rgba,
+                           pm::internal::blendFor(it.blend, it.texture && it.image->offscreen, offscreen), exact);
+            }
+    }
+}
+
+// The window's frame: everything queued, which is the window's own draws once an
+// offscreen target's have been rendered.
+void renderFrame(uint64_t token) {
+    size_t W = (size_t)display.w, H = (size_t)display.h;
+    canvas.resize(W * H * 4);
+    for (size_t i = 0; i < W * H; i++)
+        for (int c = 0; c < 4; c++) canvas[i * 4 + (size_t)c] = gammaMode ? bg[c] : rounded(bg[c]);
+    drawOnto(canvas, W, H, 0, drawItems.size(), gammaMode != 0, false);
+    frame.resize(W * H * 4);
+    for (size_t i = 0; i < W * H; i++)
+        for (int c = 0; c < 4; c++) {
+            double v = canvas[i * 4 + (size_t)c];
+            if (gammaMode) v = c < 3 ? encoded(v, c) : 1.0;
+            frame[i * 4 + (size_t)c] = (uint16_t)std::lrint(clamp01(v) * levels());
+        }
+    haveFrame = true;
+    frameToken = token;
+}
+
+// Render the offscreen target's waiting draws into it and forget them.
+void flushTarget() {
+    if (!targetHandle) return;
+    shapesEncoded += drawCount - targetCountBase;
+    drawCount = targetCountBase;
+    if (drawItems.size() > targetItemBase) {
+        Texture &t = textures[targetHandle];
+        std::vector<double> surface(t.texels.begin(), t.texels.end());
+        drawOnto(surface, t.shape.width, t.shape.height, targetItemBase, drawItems.size(), true, true);
+        for (size_t i = 0; i < surface.size(); i++) t.texels[i] = (__fp16)surface[i];
+        drawItems.resize(targetItemBase);
+    }
+}
+
+int clickAfter = -1; double dx = 0, dy = 0, mouseX = 0, mouseY = 0; uint64_t flips = 0;
+int dropEvery = 0; bool lastDropped = false; uint64_t missing = 0, lastFlipToken = 0;
+
+void readKeys(bool *kv, const bool *) { std::memset(kv, 0, 256); }
+double keyClock() { return clockNow(); }
+PMKeyboardQueue keyboard(readKeys, keyClock);
+bool keyboardPinned = false;
+
+void requireOpen() { if (!open || closing) fail("PsychMetal is not open."); }
+
+// Frames queued ahead: each is given the time a display on schedule would show it.
+struct Queued { uint64_t token; double when, planned; int status; bool reported; };
+std::vector<Queued> queued;
+double lastPlanned = 0;
+double queueCapacity() {
+    double n = std::floor(1073741824.0 / (display.w * display.h * 4));
+    return n < 2 ? 2 : n > 64 ? 64 : n;
+}
+// Mouse-button events, once MouseEvents has been called.
+bool mouseListening = false;
+std::vector<pm::MouseEvent> mouseEventList;
+// A scripted touch: with the scripted click, a finger goes down where the mouse
+// is, moves ten pixels to the right over the next refresh, and lifts.
+std::vector<pm::TouchEvent> touchEventList;
+
+void mockRecordFrame(double aim);   // the recording section, below
+bool interruptTaken = false;        // PM_MOCK_INTERRUPT: once per open
+uint64_t present(double when) {
+    double now = clockNow();
+    // As the engine: a requested time within 1% of a period after a refresh is that refresh.
+    double target = when - 0.01 * ifi > now ? when - 0.01 * ifi : when > now ? when : now;
+    double next = std::isfinite(gridTime) ? gridTime + std::ceil((target - gridTime) / ifi - 1e-9) * ifi : target;
+    if (next <= now) next += ifi;
+    while (clockNow() < next) std::this_thread::sleep_for(std::chrono::microseconds(200));
+    gridTime = next;
+    mockRecordFrame(next);
+    gridSamples++;
+    confirmed++;
+    flushTarget();
+    shapesEncoded += drawCount;
+    drawCount = 0;
+    uint64_t t = nextToken++;
+    if (readable) renderFrame(t);
+    drawItems.clear();
+    targetItemBase = targetCountBase = 0;
+    windowDrew.clear();
+    lastDropped = dropEvery > 0 && (flips + 1) % (uint64_t)dropEvery == 0;
+    missing += lastDropped;
+    pm::FrameRecord r{};
+    r.token = t; r.projected = next; r.presented = lastDropped ? 0 : next; r.status = lastDropped ? 1 : 0;
+    r.scheduledAt = now;
+    // The display's report on a frame comes after flip has returned, as on a Mac.
+    r.callback = next + 0.75 * ifi; r.requestedTime = when > 0 ? when : NAN; r.presentRequest = NAN; r.committedAt = now;
+    history.push_back(r);
+    if (history.size() > 16384) history.erase(history.begin());
+    flips++;
+    if (mouseListening && clickAfter >= 0 && flips == (uint64_t)clickAfter)
+        mouseEventList.push_back({next, 1, true, mouseX, mouseY});
+    if (clickAfter >= 0 && flips == (uint64_t)clickAfter) {
+        touchEventList.push_back({next, 1, 0, mouseX, mouseY});
+        touchEventList.push_back({next + ifi / 2, 1, 1, mouseX + 5, mouseY});
+        touchEventList.push_back({next + ifi, 1, 2, mouseX + 10, mouseY});
+    }
+    return t;
+}
+
+void clearMockMovies();       // the movies section, below
+}  // namespace
+
+// ---- lifecycle ------------------------------------------------------------------
+
+void pm::installHostHooks(const pm::HostHooks &h) { hooks = h; }
+void pm::shutdown() noexcept {
+    try { pm::closeSession(); keyboard.release(); pm::closeAudio(); } catch (...) {}
+}
+bool pm::onMainThread() noexcept {
+#if defined(__linux__)
+    return syscall(SYS_gettid) == getpid();
+#elif defined(__APPLE__)
+    return pthread_main_np() != 0;
+#else
+    return true;
+#endif
+}
+void pm::serviceMainRunLoop(double seconds) {
+    if (!pm::onMainThread()) fail("serviceMainRunLoop must be called on the main thread.");
+    std::this_thread::sleep_for(std::chrono::duration<double>(seconds < 0.01 ? seconds : 0.01));
+}
+pm::EnvironmentInfo pm::environment() { return {pm::version(),"scripted","test OS","scripted GPU",true,std::getenv("PM_MOCK_DEBUGGER")!=nullptr}; }
+bool pm::defaultDisplayLink() noexcept { return std::getenv("PM_MOCK_DISPLAY_LINK_DEFAULT") != nullptr; }
+const char *pm::version() noexcept { return pm::kEngineVersion; }
+void pm::prepareApp() { pm::closeSession(); prepared = true; }
+
+static bool mockDisplayLink=false,mockCaptured=true;
+static bool exportOnly=false;
+pm::OpenResult pm::openSession(const pm::OpenOptions &o) {
+    exportOnly=false;
+    mockDisplayLink=o.displayLink;mockCaptured=o.captureDisplay;
+    double screenIndex = o.screenIndex;
+    if (screenIndex != std::floor(screenIndex) || screenIndex < -1)
+        fail("screen index must be a non-negative integer, or -1 for the last display.");
+    if (o.drawableCount > 3) fail("maximum drawable count must be a nonnegative integer in range.");
+    if (o.drawableCount < 2) fail("Drawable count must be 2 or 3.");
+    if (screenIndex < 0) screenIndex = 0;
+    if (screenIndex >= 1)
+        failWith(pm::kErrScreen, "Screen index %d is out of range; %u display(s) are active.", (int)screenIndex, 1u);
+    if (!prepared) fail("PrepareApp must be called before Open.");
+    if (open) fail("PsychMetal native resources are already open.");
+    readDisplay();
+    texturesDrawn = texturesMade = 0;
+    double hz = display.hz;
+    if (o.refreshHz) {
+        if (*o.refreshHz < 20 || *o.refreshHz > 1000) fail("refreshHz must be 20..1000.");
+        hz = *o.refreshHz;
+    }
+    if (!pinned && hooks.pinModule) { hooks.pinModule(); pinned = true; }
+    int click = -1; double mx = 0, my = 0;
+    if (const char *e = getenv("PM_MOCK_MOUSE")) sscanf(e, "%d,%lf,%lf", &click, &mx, &my);
+    dropEvery = 0;
+    if (const char *e = getenv("PM_MOCK_DROP")) dropEvery = atoi(e);
+    clickAfter = click; dx = mx; dy = my; mouseX = display.w / 2; mouseY = display.h / 2; flips = 0; interruptTaken = false;
+    ifi = 1.0 / hz; gridTime = NAN; gridSamples = 0; confirmed = 0; missing = 0; lastFlipToken = 0;
+    startup.clear(); history.clear(); drawCount = 0; windowDrew.clear();
+    if (o.bitDepth != 8 && o.bitDepth != 10) fail("Bit depth must be 8 or 10.");
+    readable = o.readback; haveFrame = false; frameToken = 0; drawItems.clear();
+    bits = (int)o.bitDepth; blendNow = 0; gammaMode = 0; gammaTable.clear();
+    for (int &c : clipNow) c = 0;
+    targetHandle = 0; targetItemBase = targetCountBase = 0;
+    queued.clear(); lastPlanned = 0; mouseListening = false; mouseEventList.clear(); touchEventList.clear();
+    open = true; closing = false; session++;
+    if (nextHandle <= session) nextHandle = session + 1;   // a texture handle is never the window's
+    if (std::getenv("PM_MOCK_DEBUGGER") && hooks.warn)
+        hooks.warn(pm::kWarnDebugger, "A debugger is attached (scripted).");
+    return {display.w, display.h, ifi, display.w, display.h, session};
+}
+
+pm::OpenResult pm::openExport(uint64_t width,uint64_t height,double hz,bool rb) {
+    if(width<2||height<2||width>8192||height>8192||width*height>16777216)fail("Invalid export dimensions.");
+    if(!std::isfinite(hz)||hz<20||hz>1000)fail("refreshHz must be 20..1000.");
+    prepared=true;pm::OpenOptions o;o.refreshHz=hz;o.readback=rb;
+    auto result=pm::openSession(o);exportOnly=true;
+    display.w=width;display.h=height;
+    result.pixelWidth=result.pointWidth=width;result.pixelHeight=result.pointHeight=height;
+    return result;
+}
+
+std::vector<pm::StartupRecord> pm::startupHistory() { return startup; }
+std::vector<pm::StartupRecord> pm::confirmStartup() {
+    if(exportOnly)fail("Export has no startup.");
+    requireOpen();
+    if (drawCount) fail("Confirm startup before queuing stimulus drawing.");
+    if (startup.empty())
+        for (int i = 0; i < 2; i++) {
+            uint64_t t = present(0);
+            startup.push_back({t, 0, gridTime, gridTime, 1, gridTime});
+        }
+    history.clear(); confirmed = 0; missing = 0; flips = 0;   // the mouse script counts stimulus frames
+    return startup;
+}
+static void clearMockShaders();
+void pm::closeSession() {
+    clearMockShaders();
+    clearMockMovies();
+    open = false; closing = true; prepared = false; textures.clear();mockImagePipelines.clear(); drawCount = 0; windowDrew.clear();
+    readable = false; haveFrame = false; drawItems.clear(); std::vector<uint16_t>().swap(frame);
+    targetHandle = 0; targetItemBase = targetCountBase = 0; queued.clear(); mouseListening = false; mouseEventList.clear();
+    std::vector<double>().swap(canvas);
+}
+
+// ---- presentation -------------------------------------------------------------------
+
+pm::FlipResult pm::flip(double when) {
+    if(exportOnly&&!recordingClock.active())fail("Start a virtual-clock recording before flipping an export canvas.");
+    double began = clockNow();
+    if (when < 0) fail("Target must be nonnegative.");
+    requireOpen();
+    if (const char *e = getenv("PM_MOCK_INTERRUPT"); e && *e && flips == (uint64_t)atoll(e) && !interruptTaken) {
+        interruptTaken = true;
+        throw pm::Error(pm::kErrInterrupted, "Stopped by Control-C or Command-period in the PsychMetal window.");
+    }
+    // Frames that are queued come first.
+    while (lastPlanned > clockNow()) std::this_thread::sleep_for(std::chrono::microseconds(200));
+    if (lastPlanned > 0 && (!std::isfinite(gridTime) || gridTime < lastPlanned)) gridTime = lastPlanned;
+    double queued = clockNow();
+    const bool logical=recordingClock.active();
+    if(logical) when=recordingClock.beginFlip(clockNow(),when);
+    struct FinishClock { bool active; ~FinishClock(){if(active)recordingClock.finishFlip(clockNow());} } finishClock{logical};
+    uint64_t t = present(exportOnly?0:when);
+    pm::FlipResult r{};
+    // As the engine: flip returns before the display has reported on the frame,
+    // and only flipStatus learns what became of it.
+    r.time = gridTime; r.confirmed = false; r.slipRefreshes = 0; r.gridPeriod = ifi;
+    r.queueMs = (queued - began) * 1000; r.returnTime = clockNow(); r.callMs = (r.returnTime - began) * 1000;
+    if(logical) { r.time=r.returnTime=recordingClock.finishFlip(clockNow());finishClock.active=false; }
+    r.token = lastFlipToken = t;
+    return r;
+}
+// What the display has reported so far: nothing of a frame until its report has
+// come, three quarters of a refresh after it was shown or should have been.
+pm::FlipStatus pm::flipStatus() {
+    requireOpen();
+    bool confirmed = false, dropped = false;
+    uint64_t reported = missing;
+    if (!history.empty()) {
+        const pm::FrameRecord &newest = history.back();
+        const bool known = clockNow() >= newest.callback;
+        if (!known && newest.status == 1) reported--;
+        if (newest.token == lastFlipToken) { confirmed = known && newest.status == 0; dropped = known && newest.status == 1; }
+    }
+    return {confirmed, dropped, reported};
+}
+pm::QueueResult pm::queueFlip(double when) {
+    if(exportOnly)fail("Export uses Flip, not queued display presentation.");
+    const bool logical=recordingClock.active();
+    if(logical) when=recordingClock.beginQueue(clockNow(),when);
+    struct FinishClock {bool active;~FinishClock(){if(active)recordingClock.finishFlip(clockNow());}} finishClock{logical};
+    if(mockDisplayLink) fail("QueueFlip requires direct presentation.");
+    requireOpen();
+    if (!std::isfinite(when) || !(when > 0)) fail("A queued frame needs a presentation time.");
+    double now = clockNow();
+    auto waiting = [&]() { double n = 0; for (auto &q : queued) n += q.status == 0 && q.planned > clockNow(); return n; };
+    for (auto &q : queued)
+        if (q.status == 0 && q.planned > now && when <= q.when) fail("Queued frames must be given in order of time.");
+    while (waiting() >= queueCapacity()) std::this_thread::sleep_for(std::chrono::microseconds(200));
+    flushTarget();
+    shapesEncoded += drawCount;
+    drawCount = 0;
+    uint64_t t = nextToken++;
+    if (readable) renderFrame(t);
+    drawItems.clear();
+    targetItemBase = targetCountBase = 0;
+    windowDrew.clear();
+    now = clockNow();
+    double target = when - 0.01 * ifi > now ? when - 0.01 * ifi : when > now ? when : now;
+    double planned = std::isfinite(gridTime) ? gridTime + std::ceil((target - gridTime) / ifi - 1e-9) * ifi : target;
+    if (planned <= lastPlanned + 0.5 * ifi) planned = lastPlanned + ifi;
+    if (planned <= now) planned += ifi;
+    lastPlanned = planned;
+    mockRecordFrame(planned);
+    queued.push_back({t, when, planned, 0, false});
+    pm::FrameRecord r{};
+    r.token = t; r.projected = planned; r.presented = planned; r.status = 0; r.scheduledAt = now;
+    r.callback = planned; r.requestedTime = when; r.presentRequest = planned - 0.5 * ifi; r.committedAt = now;
+    history.push_back(r);
+    confirmed++; flips++;
+    if(logical) recordingClock.rememberQueued(t);
+    return {t, waiting(), queueCapacity()};
+}
+std::vector<pm::QueuedFrame> pm::queueResults(bool wait) {
+    pm::recording::Sequence sequenceClock(recordingClock,clockNow);
+    requireOpen();
+    if (wait)
+        while (lastPlanned > clockNow()) std::this_thread::sleep_for(std::chrono::microseconds(200));
+    std::vector<pm::QueuedFrame> out;
+    double now = clockNow();
+    for (auto &q : queued) {
+        bool done = q.status != 0 || q.planned <= now;
+        if (q.reported || !done) continue;
+        q.reported = true;
+        out.push_back({q.token, q.when, q.status == 0 ? q.planned : NAN, q.status});
+    }
+    queued.erase(std::remove_if(queued.begin(), queued.end(), [](const Queued &q) { return q.reported; }), queued.end());
+    return out;
+}
+uint64_t pm::queueCancel() {
+    requireOpen();
+    // Frames within the presenter's lead of their time have been handed over.
+    uint64_t n = 0;
+    double now = clockNow(), kept = 0;
+    for (auto &q : queued) {
+        if (q.status == 0 && q.planned - 3 * ifi > now) {
+            q.status = 5; n++;
+            for (auto &r : history) if (r.token == q.token) { r.status = 5; r.presented = 0; }
+        } else if (q.status == 0 && q.planned > kept) {
+            kept = q.planned;
+        }
+    }
+    lastPlanned = kept;
+    return n;
+}
+pm::GridAnchor pm::gridAnchor() {
+    return {gridSamples ? gridTime : NAN, ifi, (double)gridSamples};
+}
+double pm::nextPhase(double after, double phase) {
+    if (!gridSamples) return NAN;
+    double base = gridTime + phase * ifi;
+    return base + std::ceil((after - base) / ifi - 1e-9) * ifi;
+}
+double pm::nextRefresh(double after) {
+    if (!gridSamples) return NAN;
+    return gridTime + std::ceil((after - gridTime) / ifi - 1e-9) * ifi;
+}
+pm::WaitToDrawResult pm::waitToDraw(double target, double budget) {
+    requireOpen();
+    if (budget < 0) fail("Drawing budget must be nonnegative.");
+    double lead = 1.7 * ifi + 0.004;
+    return {clockNow(), lead, target - lead - budget};
+}
+
+// ---- drawing ------------------------------------------------------------------------
+
+void pm::setBackgroundColor(double r, double g, double b, double a) {
+    const double v[4] = {r, g, b, a};
+    for (int i = 0; i < 4; i++) {
+        if (!(v[i] >= 0.0 && v[i] <= 1.0)) fail("Background colour components run 0 to 1.");
+        bg[i] = v[i];
+    }
+}
+
+void pm::addShapes(const pm::ArrayView &kind, const pm::ArrayView &param, const pm::ArrayView &rect,
+                   const pm::ArrayView &color, const pm::ArrayView &extra) {
+    if (!open) fail("PsychMetal is not open.");
+    const pm::ArrayView *all[5] = {&kind, &param, &rect, &color, &extra};
+    for (auto v : all) if (v->type != pm::ScalarType::Float64) fail("AddShapes arguments must be real double arrays.");
+    size_t n = kind.ndim == 1 ? kind.shape[0] : 0;
+    bool ok = kind.ndim == 1 && param.ndim == 1 && param.shape[0] == n;
+    for (int i = 2; i < 5; i++) ok = ok && all[i]->ndim == 2 && all[i]->shape[0] == n && all[i]->shape[1] == 4;
+    if (!ok) fail("AddShapes expects kind and param as 1xN and rect, color and extra as 4xN.");
+    if (n > 8192 - drawCount) fail("Frame draw capacity exceeded; split the work across frames.");
+    auto at = [](const pm::ArrayView &v, size_t i, size_t j) {
+        return *(const double *)((const unsigned char *)v.data + i * v.strides[0] + j * v.strides[1]);
+    };
+    for (size_t k = 0; k < n; k++) {
+        double kd = at(kind, k, 0);
+        if (!std::isfinite(kd) || kd != std::floor(kd) || kd < 0 || kd > 8) fail("Invalid shape kind.");
+        if (!std::isfinite(at(param, k, 0)) || at(param, k, 0) < 0) fail("Invalid shape parameter.");
+        for (size_t c = 0; c < 4; c++)
+            if (!std::isfinite(at(rect, k, c)) || !std::isfinite(at(color, k, c)) || at(color, k, c) < 0 ||
+                at(color, k, c) > 1 || !std::isfinite(at(extra, k, c)))
+                fail("Shape arrays contain invalid values.");
+    }
+    if (readable)
+        for (size_t k = 0; k < n; k++) {
+            if (at(kind, k, 0) != 0) continue;       // FillRect only
+            DrawItem it;
+            stamp(it);
+            for (size_t c = 0; c < 4; c++) { it.rect[c] = at(rect, k, c); it.color[c] = at(color, k, c); }
+            drawItems.push_back(it);
+        }
+    drawCount += n;
+    shapesAppended += n;
+}
+
+static void probe(const Texture &t) {
+    size_t oc = t.shape.channels == 1 ? 1 : 4;
+    auto texel = [&](size_t y, size_t x) {
+        pm::Rect4 r{};
+        if (y >= t.shape.height || x >= t.shape.width) return r;
+        for (size_t c = 0; c < 4; c++) r[c] = c < oc ? (double)t.texels[(y * t.shape.width + x) * oc + c] : NAN;
+        return r;
+    };
+    probeA = texel(1, 0);
+    probeB = texel(0, 1);
+}
+
+uint64_t pm::makeTexture(const pm::ArrayView &image) {
+    requireOpen();
+    if (textures.size() >= 256) fail("No free texture slots.");
+    Texture t;
+    t.shape = packTexels(image, t.texels);
+    t.bytes = pm::internal::isByteImage(image);
+    probe(t);
+    uint64_t h = nextHandle++;
+    texturesMade++;
+    textures[h] = std::move(t);
+    return h;
+}
+void pm::updateTexture(uint64_t handle, const pm::ArrayView &image) {
+    requireOpen();
+    auto it = textures.find(handle);
+    if (it == textures.end()) fail("Invalid or expired texture handle.");
+    if (it->second.offscreen) fail("That is an offscreen window; draw into it instead.");
+    it->second.shape = packTexels(image, it->second.texels);
+    it->second.bytes = pm::internal::isByteImage(image);
+    probe(it->second);
+}
+void pm::drawTextures(const pm::ArrayView &handle, const pm::ArrayView &src, const pm::ArrayView &dst,
+                      const pm::ArrayView &angle, const pm::ArrayView &tint, const pm::ArrayView &filter) {
+    if (!open) fail("PsychMetal is not open.");
+    const pm::ArrayView *all[6] = {&handle, &src, &dst, &angle, &tint, &filter};
+    for (auto v : all) if (v->type != pm::ScalarType::Float64) fail("DrawTextures arguments must be real double arrays.");
+    size_t n = handle.ndim == 1 ? handle.shape[0] : 0;
+    bool ok = handle.ndim == 1 && angle.ndim == 1 && angle.shape[0] == n && filter.ndim == 1 && filter.shape[0] == n;
+    for (auto v : {&src, &dst, &tint}) ok = ok && v->ndim == 2 && v->shape[0] == n && v->shape[1] == 4;
+    if (!ok) fail("DrawTextures expects handles, angles and filter modes as 1xN and srcRects, dstRects and tints as 4xN.");
+    if (n > 8192 - drawCount) fail("Frame draw capacity exceeded; split the work across frames.");
+    auto at = [](const pm::ArrayView &v, size_t i, size_t j) {
+        return *(const double *)((const unsigned char *)v.data + i * v.strides[0] + j * v.strides[1]);
+    };
+    for (size_t k = 0; k < n; k++) {
+        if (!textures.count(pm::checkUnsigned(at(handle, k, 0), "texture handle", pm::kMaxId)))
+            fail("Invalid or expired texture handle.");
+        pm::checkUnsigned(at(filter, k, 0), "filter mode", 1);
+        for (size_t c = 0; c < 4; c++)
+            if (!std::isfinite(at(src, k, c)) || !std::isfinite(at(dst, k, c)) || !std::isfinite(at(tint, k, c)) ||
+                at(tint, k, c) < 0 || at(tint, k, c) > 1)
+                fail("Invalid texture rectangle or tint.");
+        if (!std::isfinite(at(angle, k, 0))) fail("Rotation angle out of range.");
+    }
+    if (targetHandle)
+        for (size_t k = 0; k < n; k++)
+            if ((uint64_t)at(handle, k, 0) == targetHandle) fail("An offscreen window cannot be drawn into itself.");
+    if (readable)
+        for (size_t k = 0; k < n; k++) {
+            if (at(angle, k, 0) != 0 || at(filter, k, 0) != 0) continue;   // unrotated, nearest only
+            DrawItem it;
+            it.texture = true;
+            stamp(it);
+            it.image = std::make_shared<Texture>(textures[(uint64_t)at(handle, k, 0)]);
+            for (size_t c = 0; c < 4; c++) { it.src[c] = at(src, k, c); it.dst[c] = at(dst, k, c); it.tint[c] = at(tint, k, c); }
+            drawItems.push_back(it);
+        }
+    if (!targetHandle)
+        for (size_t k = 0; k < n; k++)
+            if (textures[(uint64_t)at(handle, k, 0)].offscreen) windowDrew.insert((uint64_t)at(handle, k, 0));
+    drawCount += n;
+    texturesDrawn += n;
+}
+void pm::updateTextureRegion(uint64_t handle, const pm::ArrayView &image, double x, double y) {
+    requireOpen();
+    auto it = textures.find(handle);
+    if (it == textures.end()) fail("Invalid or expired texture handle.");
+    Texture part, &whole = it->second;
+    if (whole.offscreen) fail("That is an offscreen window; draw into it instead.");
+    part.shape = packTexels(image, part.texels);
+    if (pm::internal::isByteImage(image) != whole.bytes || part.shape.channels != whole.shape.channels)
+        fail("A partial update must have the texture's type (uint8 or logical, or float) and channel count.");
+    if (!(x >= 0 && y >= 0) || x != std::floor(x) || y != std::floor(y) ||
+        x + (double)part.shape.width > (double)whole.shape.width || y + (double)part.shape.height > (double)whole.shape.height)
+        fail("A partial update must lie inside the texture, at whole pixels.");
+    size_t oc = whole.shape.channels == 1 ? 1 : 4;
+    for (size_t row = 0; row < part.shape.height; row++)
+        for (size_t i = 0; i < part.shape.width * oc; i++)
+            whole.texels[(((size_t)y + row) * whole.shape.width + (size_t)x) * oc + i] =
+                part.texels[row * part.shape.width * oc + i];
+    probe(whole);
+}
+void pm::closeTexture(uint64_t handle) {
+    if (!textures.count(handle)) fail("Invalid or expired texture handle.");
+    if (handle == targetHandle) {
+        drawItems.resize(std::min(drawItems.size(), targetItemBase));
+        drawCount = targetCountBase;
+        targetHandle = 0; targetItemBase = targetCountBase = 0;
+    }
+    textures.erase(handle);
+}
+void pm::setClip(const std::optional<pm::Rect4> &rect) {
+    requireOpen();
+    if (!rect) { for (int &c : clipNow) c = 0; return; }
+    const pm::Rect4 &r = *rect;
+    for (double v : r)
+        if (!std::isfinite(v) || v != std::floor(v) || std::fabs(v) > 1e6)
+            fail("The clip rect must be [left top right bottom] in whole pixels.");
+    if (!(r[2] > r[0] && r[3] > r[1])) fail("The clip rect must be [left top right bottom] in whole pixels.");
+    for (size_t i = 0; i < 4; i++) clipNow[i] = (int)r[i];
+}
+uint64_t pm::openOffscreen(double width, double height, const pm::Rect4 &rgba) {
+    requireOpen();
+    if (!(width >= 1 && width <= 16384 && height >= 1 && height <= 16384) ||
+        width != std::floor(width) || height != std::floor(height))
+        fail("An offscreen window is 1 to 16384 whole pixels each way.");
+    for (double v : rgba)
+        if (!(v >= 0.0 && v <= 1.0)) fail("Offscreen window colour components run 0 to 1.");
+    if (textures.size() >= 256) fail("No free texture slots.");
+    Texture t;
+    t.shape.width = (size_t)width; t.shape.height = (size_t)height; t.shape.channels = 4;
+    t.offscreen = true;
+    t.texels.resize(t.shape.width * t.shape.height * 4);
+    for (size_t i = 0; i < t.texels.size(); i++) t.texels[i] = (__fp16)(i % 4 < 3 ? rgba[i % 4] * rgba[3] : rgba[3]);
+    uint64_t h = nextHandle++;
+    texturesMade++;
+    textures[h] = std::move(t);
+    return h;
+}
+void pm::setTarget(uint64_t handle) {
+    requireOpen();
+    if (handle == targetHandle) return;
+    if (handle) {
+        auto it = textures.find(handle);
+        if (it == textures.end()) fail("Invalid or expired texture handle.");
+        if (!it->second.offscreen) fail("That texture is not an offscreen window.");
+        if (windowDrew.count(handle))
+            fail("The window has draws of that offscreen window waiting; Flip before drawing into it again.");
+    }
+    flushTarget();
+    targetHandle = handle;
+    targetItemBase = handle ? drawItems.size() : 0;
+    targetCountBase = handle ? drawCount : 0;
+}
+void pm::drawPolygon(const pm::ArrayView &points, const pm::Rect4 &rgba, double pen) {
+    requireOpen();
+    if (points.type != pm::ScalarType::Float64 || points.ndim != 2 || points.shape[1] != 2 ||
+        points.shape[0] < 3 || points.shape[0] > 4096)
+        fail("A polygon is 3 to 4096 points, as Nx2 real doubles.");
+    if (!(pen >= 0 && pen <= 1024)) fail("The polygon pen width must be 0 (filled) to 1024 pixels.");
+    for (double v : rgba)
+        if (!(v >= 0.0 && v <= 1.0)) fail("Polygon colour components run 0 to 1.");
+    DrawItem it;
+    stamp(it);
+    it.pen = pen;
+    double lo[2] = {INFINITY, INFINITY}, hi[2] = {-INFINITY, -INFINITY};
+    for (size_t i = 0; i < points.shape[0]; i++)
+        for (size_t c = 0; c < 2; c++) {
+            double v = *(const double *)((const unsigned char *)points.data + (ptrdiff_t)i * points.strides[0] +
+                                         (ptrdiff_t)c * points.strides[1]);
+            if (!std::isfinite(v) || std::fabs(v) > 1e6) fail("Polygon points must be finite, in pixels.");
+            it.polygon.push_back(v);
+            lo[c] = std::fmin(lo[c], v); hi[c] = std::fmax(hi[c], v);
+        }
+    double margin = 1 + std::ceil(pen * 5);
+    if (!(std::ceil(hi[0]) - std::floor(lo[0]) + 2 * margin <= 16384 && std::ceil(hi[1]) - std::floor(lo[1]) + 2 * margin <= 16384))
+        fail("The polygon is too large to draw: 16384 pixels at most.");
+    if (drawCount >= 8192) fail("Frame draw capacity exceeded; split the work across frames.");
+    it.rect[0] = std::floor(lo[0]) - margin; it.rect[1] = std::floor(lo[1]) - margin;
+    it.rect[2] = std::ceil(hi[0]) + margin; it.rect[3] = std::ceil(hi[1]) + margin;
+    for (size_t c = 0; c < 4; c++) it.color[c] = rgba[c];
+    if (readable) drawItems.push_back(it);
+    drawCount++;
+    texturesDrawn++;
+}
+void pm::setBlendMode(uint64_t mode) {
+    requireOpen();
+    if (mode > 2) fail("Blend mode must be 0 (source-over), 1 (additive) or 2 (copy).");
+    blendNow = (int)mode;
+}
+void pm::setGamma(double r, double g, double b) {
+    requireOpen();
+    const double v[3] = {r, g, b};
+    for (double e : v) if (!(e >= 0.05 && e <= 20.0)) fail("Gamma exponents must be 0.05 to 20.");
+    for (int c = 0; c < 3; c++) exponent[c] = (double)(float)v[c];
+    gammaMode = (r == 1 && g == 1 && b == 1) ? 0 : 1;
+}
+void pm::setGammaTable(const pm::ArrayView &table) {
+    requireOpen();
+    if (table.type != pm::ScalarType::Float64 || table.ndim != 2 || table.shape[1] != 3 ||
+        table.shape[0] < 2 || table.shape[0] > 4096)
+        fail("The gamma table must be Nx3 real doubles, N from 2 to 4096.");
+    std::vector<double> values(table.shape[0] * 3);
+    for (size_t i = 0; i < table.shape[0]; i++)
+        for (size_t c = 0; c < 3; c++) {
+            double v = *(const double *)((const unsigned char *)table.data + (ptrdiff_t)i * table.strides[0] +
+                                         (ptrdiff_t)c * table.strides[1]);
+            if (!(v >= 0.0 && v <= 1.0)) fail("Gamma table values run 0 to 1.");
+            values[i * 3 + c] = (double)(float)v;
+        }
+    gammaTable = values;
+    gammaMode = 2;
+}
+
+// Text: no glyphs here. The bounds are those of a monospaced face 0.6 em wide.
+// DrawText inks a block in each character's cell: the top of the line for '^',
+// the bottom for '_', nothing for a space and the middle for anything else,
+// which is enough to read back where text went and which way up it is.
+static pm::TextBounds mockText(const std::string &utf8, double size) {
+    requireOpen();
+    if (!(size >= 4 && size <= 2048)) fail("Text size must be 4 to 2048 pixels.");
+    if (utf8.empty()) fail("Text must not be empty.");
+    size_t characters = 0;
+    for (unsigned char ch : utf8) characters += (ch & 0xC0) != 0x80;
+    return {std::ceil(0.6 * size * (double)characters) + 2, std::ceil(1.2 * size) + 2, std::ceil(0.9 * size) + 1};
+}
+pm::TextLayout pm::layoutText(const std::string &utf8, const std::string &font, double size, double wrap) {
+    return pm::internal::layoutText(utf8, font, size, wrap, pm::textBounds);
+}
+pm::TextBounds pm::textBounds(const std::string &utf8, const std::string &, double size) { return mockText(utf8, size); }
+pm::TextBounds pm::drawText(const std::string &utf8, const std::string &, double size, double x, double y,
+                            const pm::Rect4 &rgba) {
+    if (!std::isfinite(x) || !std::isfinite(y)) fail("Text position must be finite.");
+    for (double v : rgba) if (!(v >= 0.0 && v <= 1.0)) fail("Text colour components run 0 to 1.");
+    pm::TextBounds b = mockText(utf8, size);
+    if (drawCount >= 8192) fail("Frame draw capacity exceeded; split the work across frames.");
+    if (readable) {
+        double left = std::floor(x + 0.5) + 1, top = std::floor(y + 0.5), cell = 0.6 * size;
+        size_t k = 0;
+        for (unsigned char ch : utf8) {
+            if ((ch & 0xC0) == 0x80) continue;
+            double from = ch == '^' ? 0.10 : ch == '_' ? 0.80 : 0.30, to = ch == '^' ? 0.30 : ch == '_' ? 0.95 : 0.70;
+            if (ch != ' ') {
+                DrawItem it;
+                stamp(it);
+                it.rect[0] = std::floor(left + cell * (double)k + 1); it.rect[2] = std::floor(left + cell * (double)(k + 1) - 1);
+                it.rect[1] = std::floor(top + from * b.height); it.rect[3] = std::floor(top + to * b.height);
+                for (int c = 0; c < 4; c++) it.color[c] = rgba[(size_t)c];
+                drawItems.push_back(it);
+            }
+            k++;
+        }
+    }
+    drawCount++;
+    texturesDrawn++;
+    return b;
+}
+
+pm::ImageRegion pm::checkImageRect(const std::optional<pm::Rect4> &rect) {
+    requireOpen();
+    if (!readable) fail("GetImage requires a window opened with readback.");
+    if (!rect) return {0, 0, (size_t)display.w, (size_t)display.h, bits};
+    const pm::Rect4 &r = *rect;
+    for (double v : r)
+        if (!std::isfinite(v) || v != std::floor(v))
+            fail("GetImage rect must be [left top right bottom] in whole pixels inside the window.");
+    if (r[0] < 0 || r[1] < 0 || r[2] <= r[0] || r[3] <= r[1] || r[2] > display.w || r[3] > display.h)
+        fail("GetImage rect must be [left top right bottom] in whole pixels inside the window.");
+    return {(size_t)r[0], (size_t)r[1], (size_t)(r[2] - r[0]), (size_t)(r[3] - r[1]), bits};
+}
+
+static void checkRead(const pm::ImageRegion &g, bool matches, size_t h, size_t w, size_t c, int ndim, bool data) {
+    requireOpen();
+    if (!readable) fail("GetImage requires a window opened with readback.");
+    if (!matches) fail(bits == 10 ? "This window is 10-bit; its frames are read as 16-bit values."
+                                  : "This window is 8-bit; its frames are read as bytes.");
+    if (!g.width || !g.height || g.x + g.width > (size_t)display.w || g.y + g.height > (size_t)display.h)
+        fail("GetImage rect must be [left top right bottom] in whole pixels inside the window.");
+    if (!data || ndim != 3 || h != g.height || w != g.width || c != 3)
+        fail("Image output buffer does not match the request.");
+    if (!haveFrame) fail("GetImage needs a frame; Flip first.");
+    if (frameToken != nextToken - 1) fail("The last frame was not copied; there is nothing to read.");
+}
+void pm::getImage(const pm::ImageRegion &g, const pm::MutableByteView &out) {
+    checkRead(g, bits == 8, out.shape[0], out.shape[1], out.shape[2], out.ndim, out.data != nullptr);
+    for (size_t y = 0; y < g.height; y++)
+        for (size_t x = 0; x < g.width; x++) {
+            const uint16_t *p = &frame[((g.y + y) * (size_t)display.w + g.x + x) * 4];
+            uint8_t *q = out.data + (ptrdiff_t)y * out.strides[0] + (ptrdiff_t)x * out.strides[1];
+            for (int c = 0; c < 3; c++) q[c * out.strides[2]] = (uint8_t)p[c];
+        }
+}
+pm::HDRInfo pm::hdrInfo(){requireOpen();return {false,1,1,0};}
+void pm::setHDRExposure(double){fail("Scripted display is SDR.");}
+void pm::getImageFloat(const pm::ImageRegion &,const pm::MutableFloatView &){fail("Scripted display is SDR.");}
+void pm::getImage16(const pm::ImageRegion &g, const pm::MutableWordView &out) {
+    checkRead(g, bits == 10, out.shape[0], out.shape[1], out.shape[2], out.ndim, out.data != nullptr);
+    for (size_t y = 0; y < g.height; y++)
+        for (size_t x = 0; x < g.width; x++) {
+            const uint16_t *p = &frame[((g.y + y) * (size_t)display.w + g.x + x) * 4];
+            unsigned char *q = (unsigned char *)out.data + (ptrdiff_t)y * out.strides[0] + (ptrdiff_t)x * out.strides[1];
+            for (int c = 0; c < 3; c++) std::memcpy(q + c * out.strides[2], &p[c], 2);
+        }
+}
+
+// ---- display modes, cursor, input ------------------------------------------------------
+
+std::vector<pm::DisplayMode> pm::modes(double si) {
+    if (si < 0) si = 0;
+    if (si != std::floor(si) || si >= 1) fail("Screen index is out of range.");
+    readDisplay();
+    return {{display.w, display.h, display.w, display.h, display.hz}, {1024, 768, 1024, 768, 60}};
+}
+void pm::setMode(double si, double w, double h, double hz) {
+    if (open) fail("Close the PsychMetal window before changing the display mode.");
+    auto m=pm::modes(si);
+    if (pm::internal::selectDisplayMode(m,0,w,h,hz)<m.size()) return;
+    failWith(pm::kErrMode,"No matching display mode.");
+}
+void pm::setCursorVisible(bool) {}
+pm::LinkInfo pm::linkInfo() {
+    if (!open || closing) fail("LinkInfo requires an open PsychMetal window.");
+    pm::LinkInfo k{NAN, NAN, NAN, NAN, NAN};
+    k.pixelGbps = display.w * display.h * 3.0 * bits / ifi / 1e9;
+    double lanes, gbps;
+    if (const char *e = getenv("PM_MOCK_LINK"))
+        if (sscanf(e, "%lf,%lf", &lanes, &gbps) == 2) {
+            k.lanes = lanes; k.laneGbps = gbps; k.payloadGbps = lanes * gbps * 0.8;
+            double least = display.w * display.h * 24.0 / ifi / 1e9, ample = display.w * display.h * 37.5 / ifi / 1e9;
+            if (k.payloadGbps < least) k.compressed = 1;
+            else if (k.payloadGbps >= ample) k.compressed = 0;
+        }
+    return k;
+}
+
+pm::MouseState pm::mouse() {
+    if (!open) fail("Mouse requires an open PsychMetal window.");
+    mouseX += dx; mouseY += dy;
+    pm::MouseState m{};
+    m.x = mouseX; m.y = mouseY;
+    m.buttons = {clickAfter >= 0 && flips >= (uint64_t)clickAfter, false, false};
+    return m;
+}
+void pm::setMouse(double x, double y) {
+    if (!open) fail("SetMouse requires an open PsychMetal window.");
+    if (!(x >= 0 && x <= display.w && y >= 0 && y <= display.h))
+        fail("SetMouse position must be inside the window, in pixels.");
+    mouseX = x - dx; mouseY = y - dy;   // the next read is the position set; the scripted drift goes on from there
+}
+pm::KeyState pm::keys() {
+    if (getenv("PM_MOCK_INPUT_SERIAL")) {
+        static std::atomic<int> readers{0};
+        if (readers.fetch_add(1)!=0) {readers.fetch_sub(1);fail("Concurrent input readers.");}
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        readers.fetch_sub(1);
+    }
+    pm::KeyState k{};
+    k.anyDown = false; k.secs = clockNow(); k.securePid = 0;
+    // "USAGE:FROM-TO,...": key USAGE is down while FROM <= frames flipped since open < TO.
+    if (const char *e = getenv("PM_MOCK_KEYS")) {
+        int usage, from, to, used;
+        while (sscanf(e, "%d:%d-%d%n", &usage, &from, &to, &used) == 3) {
+            if (usage >= 1 && usage <= 256 && flips >= (uint64_t)from && flips < (uint64_t)to)
+                k.down[(size_t)usage - 1] = k.anyDown = true;
+            e += used;
+            if (*e == ',') e++;
+        }
+    }
+    return k;
+}
+pm::KbQueueStatus pm::kbQueueStatus() {
+    auto s = keyboard.stats();
+    return {s.created, s.running, s.interval, s.lastScanInterval, s.maxScanInterval,
+            (uint64_t)s.scans, (uint64_t)s.dropped, 0,
+            s.events, (uint64_t)s.eventStamped, (uint64_t)s.pollStamped, s.maxEventDelay * 1000};
+}
+pm::TouchEvents pm::touchEvents() {
+    if (!open) fail("TouchEvents requires an open PsychMetal window.");
+    pm::TouchEvents out{};
+    out.events.swap(touchEventList);
+    return out;
+}
+pm::MouseEvents pm::mouseEvents() {
+    if (!open) fail("MouseEvents requires an open PsychMetal window.");
+    pm::MouseEvents out{};
+    if (!mouseListening) { mouseListening = true; mouseEventList.clear(); return out; }
+    out.events.swap(mouseEventList);
+    return out;
+}
+void pm::kbQueueCreate(const std::array<double, 256> &m, double interval) {
+    bool filter[256];
+    for (int k = 0; k < 256; k++) { if (!std::isfinite(m[(size_t)k])) fail("Key mask must be finite."); filter[k] = m[(size_t)k] != 0; }
+    if (interval < .001 || interval > .1) fail("Poll interval must be between .001 and .1 seconds.");
+    keyboard.create(filter, interval);
+    if (!keyboardPinned) { if (hooks.pinModule) hooks.pinModule(); keyboardPinned = true; }
+}
+void pm::kbQueueRelease() {
+    keyboard.release();
+    if (keyboardPinned) { keyboardPinned = false; if (hooks.unpinModule) hooks.unpinModule(); }
+}
+void pm::kbQueueStart() {
+    if (!keyboard.exists()) fail("Create a keyboard queue first.");
+    if (!keyboard.start()) fail("Cannot start keyboard queue worker.");
+}
+void pm::kbQueueStop() { if (!keyboard.exists()) fail("Create a keyboard queue first."); keyboard.stop(); }
+void pm::kbQueueFlush() { if (!keyboard.exists()) fail("Create a keyboard queue first."); keyboard.flush(); }
+pm::KbEvents pm::kbQueueGetEvents() {
+    if (!keyboard.exists()) fail("Create a keyboard queue first.");
+    unsigned long long dropped = 0;
+    auto e = keyboard.events(dropped);
+    pm::KbEvents out{};
+    for (auto &x : e) out.events.push_back({x.time, x.key, x.pressed});
+    out.dropped = dropped;
+    return out;
+}
+pm::KbCheck pm::kbQueueCheck() {
+    if (!keyboard.exists()) fail("Create a keyboard queue first.");
+    double s[4][256];
+    keyboard.check(s);
+    pm::KbCheck c{};
+    c.pressed = false;
+    for (int k = 0; k < 256; k++) if (s[0][k] != 0) c.pressed = true;
+    std::memcpy(c.firstPress.data(), s[0], sizeof(s[0]));
+    std::memcpy(c.firstRelease.data(), s[1], sizeof(s[1]));
+    std::memcpy(c.lastPress.data(), s[2], sizeof(s[2]));
+    std::memcpy(c.lastRelease.data(), s[3], sizeof(s[3]));
+    return c;
+}
+
+// ---- time, diagnostics -------------------------------------------------------------------
+
+double pm::now() noexcept { return recordingClock.now(clockNow()); }
+double pm::waitUntil(double deadline) {
+    if(exportOnly && recordingClock.active())return recordingClock.advanceWait(deadline,clockNow());
+    deadline=recordingClock.deadline(deadline,clockNow());
+    // Sleep, then spin the last 2 ms, as the engine does, so the wait-precision
+    // checks in the inventory tests mean the same thing here as on a Mac.
+    while (deadline - clockNow() > 0.002) std::this_thread::sleep_for(std::chrono::microseconds(200));
+    while (clockNow() < deadline) {}
+    return pm::now();
+}
+pm::DiagnosticReport pm::diagnostic() {
+    pm::DiagnosticReport r{};
+    r.history = history;
+    auto &d = r.summary;
+    d.confirmedPresentations = (double)confirmed;
+    d.missingPresentedTimes = (double)missing;
+    d.renderWidth = display.w; d.renderHeight = display.h; d.drawableCount = 3;
+    d.readbackEnabled = readable;d.displayCaptured=!exportOnly&&mockCaptured;
+    d.measuredRefreshHz = 1.0 / ifi; d.gridSamples = (double)gridSamples;
+    d.shapesAppended = (double)shapesAppended; d.shapesEncoded = (double)shapesEncoded;
+    d.texturesCreated = (double)texturesMade; d.texturesDrawn = (double)texturesDrawn;
+    d.lastShapeRect = probeA; d.lastShapeColor = probeB;
+    d.backingScaleFactor = 1;
+    return r;
+}
+
+static std::map<uint64_t,std::string> mockShaders;
+static uint64_t mockShaderNext=1;
+static void clearMockShaders(){mockShaders.clear();}
+uint64_t pm::createShader(const std::string &source) {
+    requireOpen();if(source.empty() || source.size()>262144 || source.find('\0')!=std::string::npos || source.find("psychmetal_main")==std::string::npos)fail("Invalid custom shader source (contract stub, not a compiler).");
+    if(mockShaders.size()>=64)fail("Shader capacity exceeded.");
+    uint64_t h=mockShaderNext++;mockShaders[h]=source;return h;
+}
+void pm::closeShader(uint64_t handle) {if(!mockShaders.erase(handle))fail("Invalid or expired shader handle.");}
+void pm::drawShader(uint64_t handle,const ArrayView &parameters,const ArrayView &dst,uint64_t mask,const ArrayView *coverage) {
+    requireOpen();checkShaderParameters(parameters);if(!mockShaders.count(handle))fail("Invalid or expired shader handle.");
+    if(dst.type!=ScalarType::Float64 || dst.ndim!=1 || dst.shape[0]!=4 || !dst.data)fail("Invalid shader destination.");
+    double r[4];for(int i=0;i<4;i++){memcpy(r+i,(const char*)dst.data+i*dst.strides[0],8);if(!std::isfinite(r[i]) || fabs(r[i])>1e6)fail("Invalid shader destination.");}
+    if(r[2]<=r[0] || r[3]<=r[1])fail("Invalid shader destination.");
+    if(coverage)checkMask(*coverage);
+    if(mask && (!textures.count(mask) || textures.at(mask).shape.channels!=1 || textures.at(mask).offscreen))fail("Invalid shader mask.");
+    if(drawCount>=8192)fail("Frame capacity exceeded.");
+    DrawItem item;stamp(item);drawItems.push_back(item);++drawCount;
+}
+
+// Masked image contract only; shader pixels are checked on a real Metal device.
+void pm::drawMaskedTexture(uint64_t source,const pm::ArrayView &parameters,uint64_t mask,const pm::ArrayView *coverage) {
+    requireOpen();
+    if(parameters.type!=pm::ScalarType::Float64 || parameters.ndim!=1 || parameters.shape[0]!=14 || !parameters.data)fail("Invalid masked texture parameters.");
+    double p[14];for(int i=0;i<14;i++){memcpy(p+i,(const char*)parameters.data+(ptrdiff_t)i*parameters.strides[0],8);if(!std::isfinite(p[i]))fail("Nonfinite image parameter.");}
+    for(int i=0;i<4;i++)if(p[i]<0 || p[i]>1 || fabs(p[i+4])>1e6 || p[i+8]<0 || p[i+8]>1)fail("Invalid crop, destination or tint.");
+    if(p[2]<=p[0] || p[3]<=p[1] || p[6]<=p[4] || p[7]<=p[5] || fabs(p[12])>1e6 || (p[13]!=0 && p[13]!=1))fail("Invalid image geometry.");
+    if(coverage)pm::checkMask(*coverage);
+    if(!textures.count(source) || source==targetHandle)fail("Invalid source texture.");
+    if(mask && (!textures.count(mask) || textures.at(mask).shape.channels!=1 || textures.at(mask).offscreen))fail("Invalid image mask.");
+    if(drawCount>=8192)fail("Frame draw capacity exceeded.");
+    DrawItem it;stamp(it);it.image=std::make_shared<Texture>(textures.at(source));drawItems.push_back(it);++drawCount;++texturesDrawn;
+    if(!targetHandle && textures.at(source).offscreen)windowDrew.insert(source);
+}
+
+// Command-contract stub only; procedural pixels are covered by the real GPU test.
+void pm::drawStimulus(const pm::ArrayView &parameters,const pm::ArrayView &dst,uint64_t mask,const pm::ArrayView *coverage) {
+    requireOpen(); pm::checkStimulus(parameters);if(coverage) pm::checkMask(*coverage);
+    if(dst.type!=pm::ScalarType::Float64 || dst.ndim!=1 || dst.shape[0]!=4) fail("Invalid stimulus rect.");
+    if(mask && (textures.find(mask)==textures.end() || textures.at(mask).shape.channels!=1)) fail("Invalid stimulus mask.");
+    if(drawCount>=8192) fail("Frame draw capacity exceeded.");
+    DrawItem item;item.procedural=true;stamp(item);
+    for(size_t i=0;i<15;i++) item.stimulus[i]=*(const double*)((const char*)parameters.data+i*parameters.strides[0]);
+    for(size_t i=0;i<4;i++) item.rect[i]=*(const double*)((const char*)dst.data+i*dst.strides[0]);
+    drawItems.push_back(item);++drawCount;
+}
+
+std::vector<pm::FrameRecord> pm::recentFrames(size_t count) {
+    requireOpen();
+    if(count < 1 || count > 256) fail("History count must be from 1 to 256.");
+    auto begin = history.size() > count ? history.end() - count : history.begin();
+    return {begin, history.end()};
+}
+
+// Contract-only timeline stand-in. Actual native loop/snapshots are tested by
+// test_play_timeline.py. This renderer does not synthesize procedural pixels.
+static std::atomic<bool> mockTimelineCancelled{false};
+static pm::timeline::LiveState mockLiveTimeline;
+void pm::updateTimeline(const ArrayView &updates){mockLiveTimeline.update(updates);}
+void pm::cancelTimeline(bool cancel) noexcept { mockTimelineCancelled.store(cancel); }
+pm::TimelineResult pm::playTimeline(uint64_t frames,const pm::ArrayView &tracks,const pm::ArrayView *keyframes) {
+    requireOpen();
+    if(frames<1 || frames>1000000) fail("Invalid frame count.");
+    if(targetHandle) fail("Timeline requires the window target.");
+    if(tracks.type!=pm::ScalarType::Float64 || tracks.ndim!=2 || tracks.shape[1]!=6 || tracks.shape[0]>32768 || (tracks.shape[0] && !tracks.data)) fail("Invalid timeline tracks.");
+    auto at=[&](size_t i,size_t j){return *(const double*)((const char*)tracks.data+i*tracks.strides[0]+j*tracks.strides[1]);};
+    std::vector<pm::timeline::Track> program;
+    std::set<std::pair<uint64_t,uint64_t>> used;
+    for(size_t i=0;i<tracks.shape[0];i++) {
+        if(drawItems.empty()) fail("Timeline needs a queued draw.");
+        auto index=pm::checkUnsigned(at(i,0),"index",drawItems.size()-1);
+        auto parameter=pm::checkUnsigned(at(i,1),"parameter",3);
+        auto kind=pm::checkUnsigned(at(i,2),"kind",1);
+        auto period=pm::checkUnsigned(at(i,3),"period",1000000);
+        double amplitude=at(i,4),offset=at(i,5);
+        if(!drawItems[index].procedural || period<2 || period%2 || !std::isfinite(amplitude) || !std::isfinite(offset) || !used.insert({index,parameter}).second) fail("Invalid track.");
+        double low=kind ? std::min(offset,offset+amplitude) : offset-std::abs(amplitude);
+        double high=kind ? std::max(offset,offset+amplitude) : offset+std::abs(amplitude);
+        if(!std::isfinite(low) || !std::isfinite(high) || low<(parameter==0 ? 0 : -1000000) || high>(parameter==0 ? 1 : 1000000)) fail("Invalid track range.");
+        program.push_back({index,parameter,kind,period,amplitude,offset});
+    }
+    auto scene=drawItems;size_t count=drawCount;
+    pm::recording::Sequence sequenceClock(recordingClock,clockNow);
+    pm::TimelineResult result{};result.expectedRefreshHz=1/ifi;
+    pm::timeline::Presentations shown;shown.period=ifi;
+    std::vector<std::array<double,4>> bounds(scene.size());std::vector<bool> enabled(scene.size());
+    for(size_t i=0;i<scene.size();i++){enabled[i]=scene[i].procedural;for(int j=0;j<4;j++)bounds[i][j]=scene[i].rect[j];}
+    std::vector<std::array<bool,4>> controls(scene.size());for(const auto &track:program)controls[track.drawIndex][track.parameter]=true;
+    auto keyed=pm::timeline::keyTracks(keyframes,bounds,enabled,controls);(void)keyed;
+    mockLiveTimeline.start(bounds,enabled);
+    try {
+        for(uint64_t frame=0;frame<frames;frame++) {
+            if(mockTimelineCancelled.load() || pm::keys().down[40]) {result.cancelled=true;break;}
+            drawItems=scene;drawCount=count;
+            for(const auto &track:program){
+                auto &item=drawItems[track.drawIndex];double value=pm::timeline::value(track,frame);
+                if(track.parameter<2) item.stimulus[track.parameter==0 ? 4 : 7]=value;
+                else {size_t axis=track.parameter-2;item.rect[axis]+=value;item.rect[axis+2]+=value;}
+            }
+            auto f=pm::flip(0);
+            if(!result.submitted) result.firstToken=f.token;
+            result.lastToken=f.token;result.lastQueueMs=f.queueMs;result.lastFlipMs=f.callMs;
+            result.lastConfirmed=f.confirmed;
+            shown.note(result.submitted++,f.time);     // the scripted display shows every frame at its time
+        }
+    } catch(...) {mockLiveTimeline.stop();drawItems.clear();drawCount=0;throw;}
+    mockLiveTimeline.stop();drawItems.clear();drawCount=0;
+    if(result.cancelled) mockTimelineCancelled.store(false);
+    result.shown=shown.shown;result.late=shown.late;result.lateRefreshes=shown.lateRefreshes;
+    result.firstLateSample=shown.late ? double(shown.firstLate) : NAN;
+    result.meanSampleMs=shown.meanSampleSeconds()*1000;result.longestIntervalMs=shown.longest*1000;
+    return result;
+}
+
+// ---- movies -------------------------------------------------------------------------
+// A scripted movie (PM_MOCK_MOVIE): the frame table, the frames' pixels and the
+// sound are made up; the front ends' arithmetic and the engine's checks are real.
+namespace {
+struct MockMovie { pm::MovieInfo info; double fps = 30; std::vector<double> times; bool silent = false; };
+struct MockRecording { std::string path, codec; double scale = 1; bool sound = false, virtualClock = false; double first = NAN; int64_t lastTick = -1; std::vector<int64_t> ticks; };
+std::unique_ptr<MockRecording> mockRecorder;
+std::map<std::string, std::vector<int64_t>> mockRecorded;
+std::map<std::string,double> mockRecordedDuration;
+std::set<std::string> mockRecordedSound;      // recorded with a sound track: silence here
+std::map<uint64_t, MockMovie> mockMovies;
+uint64_t nextMovie = 1;
+void clearMockMovies();
+MockMovie &mockMovie(uint64_t h) {
+    auto it = mockMovies.find(h);
+    if (it == mockMovies.end()) fail("Unknown or closed movie handle.");
+    return it->second;
+}
+std::shared_ptr<Texture> mockMovieFrame(const MockMovie &m, uint64_t k) {
+    auto t = std::make_shared<Texture>();
+    t->shape = {(size_t)m.info.height, (size_t)m.info.width, 4};
+    t->bytes = true;
+    t->texels.resize(t->shape.height * t->shape.width * 4);
+    const size_t w = t->shape.width, h = t->shape.height;
+    for (size_t y = 0; y < h; y++)
+        for (size_t x = 0; x < w; x++) {
+            __fp16 *p = &t->texels[(y * w + x) * 4];
+            if (y < h / 2) {
+                const __fp16 v = (__fp16)(((k >> (x * 16 / w)) & 1) ? 1.0 : 0.0);
+                p[0] = p[1] = p[2] = v;
+            } else {
+                p[0] = (__fp16)((double)(k % 256) / 255); p[1] = (__fp16)((double)(255 - k % 256) / 255);
+                p[2] = (__fp16)(64.0 / 255);
+            }
+            p[3] = (__fp16)1;
+        }
+    return t;
+}
+void checkMockMovieDraw(const MockMovie &m, uint64_t index, const pm::Rect4 &src, const pm::Rect4 &dst,
+                        double angle, const pm::Rect4 &tint, int filter) {
+    if ((double)index >= m.info.frames)
+        failWith(pm::kErrGeneral, "The movie has %.0f frames, numbered from 0; there is no frame %llu.",
+                 m.info.frames, (unsigned long long)index);
+    for (size_t c = 0; c < 4; c++) {
+        if (!std::isfinite(src[c]) || src[c] < 0 || src[c] > 1) fail("The source rect is a fraction of the frame, 0 to 1.");
+        if (!std::isfinite(dst[c])) fail("Invalid destination rect.");
+        if (!std::isfinite(tint[c]) || tint[c] < 0 || tint[c] > 1) fail("Invalid tint.");
+    }
+    if (!std::isfinite(angle)) fail("Rotation angle out of range.");
+    if (filter != 0 && filter != 1) fail("filter mode must be 0 (nearest) or 1 (linear).");
+}
+void queueMockMovieFrame(const MockMovie &m, uint64_t index, const pm::Rect4 &src, const pm::Rect4 &dst,
+                         double angle, const pm::Rect4 &tint, int filter) {
+    if (drawCount >= 8192) fail("Frame draw capacity exceeded; split the work across frames.");
+    if (readable && angle == 0 && filter == 0) {
+        DrawItem it;
+        it.texture = true;
+        stamp(it);
+        it.image = mockMovieFrame(m, index);
+        for (size_t c = 0; c < 4; c++) { it.src[c] = src[c]; it.dst[c] = dst[c]; it.tint[c] = tint[c]; }
+        drawItems.push_back(it);
+    }
+    drawCount++;
+    texturesDrawn++;
+}
+}  // namespace
+
+uint64_t pm::openMovie(const std::string &path, pm::MovieInfo &info) {
+    requireOpen();
+    if (path.empty() || path.find("missing") != std::string::npos)
+        failWith(pm::kErrGeneral, "There is no movie at %s.", path.c_str());
+    int w = 160, h = 96, frames = 90;
+    double fps = 30, rate = 48000;
+    // Without PM_MOCK_MOVIE, the forms make test writes, by name (tests/make_test_movie.mm).
+    if (path.find("frames_24fps") != std::string::npos) { fps = 24; frames = 48; }
+    if (path.find("frames_portrait") != std::string::npos) { w = 96; h = 160; frames = 30; }
+    if (const char *e = getenv("PM_MOCK_MOVIE")) sscanf(e, "%dx%d@%lf,%d,%lf", &w, &h, &fps, &frames, &rate);
+    MockMovie m;
+    m.fps = fps;
+    m.info.width = w; m.info.height = h; m.info.frames = frames; m.info.frameRate = fps;
+    m.info.duration = frames / fps; m.info.constantRate = true;
+    m.info.soundChannels = rate > 0 ? 2 : 0; m.info.soundRate = rate > 0 ? rate : 0;
+    m.info.codec = "mock";
+    if (auto recorded = mockRecorded.find(path); recorded != mockRecorded.end() && !(getenv("PM_MOCK_MOVIE") && *getenv("PM_MOCK_MOVIE"))) {
+        // A movie recorded in this process: its frames at their refreshes, at the window's size, no sound.
+        const auto &ticks = recorded->second;
+        m.info.width = display.w; m.info.height = display.h; m.info.frames = (double)ticks.size();
+        for (int64_t t : ticks) m.times.push_back((double)t * ifi);
+        m.info.duration = mockRecordedDuration.count(path)?mockRecordedDuration[path]:(double)(ticks.back()+1)*ifi;
+        m.info.frameRate = m.info.frames / m.info.duration;
+        m.fps = m.info.frameRate;
+        m.info.constantRate = ticks.back() + 1 == (int64_t)ticks.size();
+        const bool sound = mockRecordedSound.count(path) > 0;
+        m.info.soundChannels = sound ? 2 : 0;
+        m.info.soundRate = sound ? 48000 : 0;
+        m.silent = sound;
+    }
+    info = m.info;
+    uint64_t handle = nextMovie++;
+    mockMovies[handle] = m;
+    return handle;
+}
+uint64_t pm::transcodeMovie(const std::string &source,const std::string &destination,const std::string &codec) {
+    if(source==destination || (codec!="h264"&&codec!="hevc"&&codec!="prores4444"&&codec!="prores422")) fail("Invalid movie conversion.");
+    if(source.empty()||source.find("missing")!=std::string::npos)fail("Source movie is missing.");
+    int w=160,h=96,frames=90;double fps=30,rate=48000;
+    if(const char *e=getenv("PM_MOCK_MOVIE"))sscanf(e,"%dx%d@%lf,%d,%lf",&w,&h,&fps,&frames,&rate);
+    return (uint64_t)frames; // standalone operation: no display/session required
+}
+uint64_t pm::prepareMovie(uint64_t movie,uint32_t frames,uint64_t maxBytes) {
+    const auto &m=mockMovie(movie);
+    const uint64_t n=frames?std::min<uint64_t>(frames,m.info.frames):(uint64_t)m.info.frames;
+    if(frames>256 || maxBytes<16 || maxBytes>2147483648ull || n>maxBytes/(uint64_t)(m.info.width*m.info.height*4)) fail("Invalid movie buffer request.");
+    return n;
+}
+std::vector<double> pm::movieFrameTimes(uint64_t movie) {
+    const MockMovie &m = mockMovie(movie);
+    if (!m.times.empty()) return m.times;
+    std::vector<double> out((size_t)m.info.frames);
+    for (size_t k = 0; k < out.size(); k++) out[k] = (double)k / m.fps;
+    return out;
+}
+void pm::drawMovieFrame(uint64_t movie, uint64_t index, const pm::Rect4 &src, const pm::Rect4 &dst,
+                        double angle, const pm::Rect4 &tint, int filter) {
+    requireOpen();
+    const MockMovie &m = mockMovie(movie);
+    checkMockMovieDraw(m, index, src, dst, angle, tint, filter);
+    queueMockMovieFrame(m, index, src, dst, angle, tint, filter);
+}
+std::vector<float> pm::movieSound(uint64_t movie, double rate, double speed, bool keepPitch, uint32_t &channels) {
+    const MockMovie &m = mockMovie(movie);
+    if (!(m.info.soundChannels > 0)) fail("The movie has no sound.");
+    if (!(rate >= 8000 && rate <= 384000)) fail("rate must be 8000 to 384000 Hz.");
+    if (!(speed >= .25 && speed <= 4)) fail("speed must be 0.25 to 4.");
+    channels = 2;
+    // Resampled: decoded at rate/speed. Stretched: the tone keeps its pitch at `rate`.
+    const double decoded = rate / speed, toneRate = keepPitch ? rate : decoded;
+    const size_t n = (size_t)std::llround(m.info.duration * decoded);
+    std::vector<float> out(n * 2);
+    // As tests/make_test_movie.mm: 440 Hz at 0.2, and a 1 ms click at 0.9 starting each second.
+    if (!m.silent)
+        for (size_t i = 0; i < n; i++) {
+            const double t = (double)i / toneRate;
+            out[2 * i] = out[2 * i + 1] = t - std::floor(t) < .001 ? .9f : (float)(.2 * std::sin(2 * M_PI * 440 * t));
+        }
+    return out;
+}
+pm::MovieResult pm::playMovie(uint64_t movie, uint64_t first, uint64_t count, uint32_t refreshes,
+                              const pm::Rect4 &src, const pm::Rect4 &dst, double when, uint64_t sound, double gain) {
+    requireOpen();
+    if (targetHandle) fail("PlayMovie draws into the window; end drawing into the offscreen window first.");
+    const MockMovie &m = mockMovie(movie);
+    if (count < 1 || (double)(first + count) > m.info.frames) fail("The frames to play lie outside the movie.");
+    if (refreshes < 1 || refreshes > 1000) fail("refreshes per frame must be 1 to 1000.");
+    checkMockMovieDraw(m, first, src, dst, 0, {1, 1, 1, 1}, 1);
+    if (drawCount) fail("PlayMovie draws each frame itself; flip or clear what is queued first.");
+    if (!std::isnan(when) && !(std::isfinite(when) && when >= 0)) fail("when must be a GetSecs time, or NaN.");
+    pm::recording::Sequence sequenceClock(recordingClock,clockNow);
+    pm::MovieResult result{};
+    result.expectedRefreshHz = 1 / ifi;
+    const double earliest = pm::now() + 3 * ifi;
+    const double aim = std::isnan(when) ? earliest : std::max(when, earliest);
+    result.start = recordingClock.active()?recordingClock.align(aim):std::isfinite(pm::nextRefresh(aim)) ? pm::nextRefresh(aim) : aim;
+    if (sound) result.voice = pm::play(sound, result.start, 0, 0, gain, 1);
+    pm::timeline::Presentations shown; shown.period = ifi;
+    try {
+        for (uint64_t k = 0; k < count && !result.cancelled; k++) {
+            for (uint32_t r = 0; r < refreshes; r++) {
+                if (mockTimelineCancelled.load() || pm::keys().down[40]) { result.cancelled = true; break; }
+                // The engine samples linearly; the scripted renderer draws only nearest
+                // sampling, which is the same at native size.
+                queueMockMovieFrame(m, first + k, src, dst, 0, {1, 1, 1, 1}, 0);
+                auto f = pm::flip(result.submitted ? 0 : result.start);
+                if (!result.submitted) { result.firstToken = f.token; result.firstPresented = f.time; }
+                result.lastToken = f.token;
+                shown.note(result.submitted++, f.time);
+            }
+            if (!result.cancelled) ++result.frames;
+        }
+    } catch (...) { drawItems.clear(); drawCount = 0; throw; }
+    if (result.cancelled) {
+        mockTimelineCancelled.store(false);
+        if (result.voice) pm::stopSound(result.voice, NAN);
+    }
+    result.shown = shown.shown; result.late = shown.late; result.lateRefreshes = shown.lateRefreshes;
+    result.longestIntervalMs = shown.longest * 1000;
+    if (!result.submitted) result.firstPresented = NAN;
+    return result;
+}
+// Recording: what was recorded is remembered by path, and OpenMovie of that path
+// gives a movie of those frames, each carrying its number in the test movies'
+// pattern, at the refreshes they were aimed at. No file is written.
+namespace {
+void mockRecordFrame(double aim) {
+    if (!mockRecorder) return;
+    MockRecording &r = *mockRecorder;
+    if(r.virtualClock) aim=pm::now();
+    if (!std::isfinite(r.first)) r.first = aim;
+    int64_t tick = (int64_t)std::llround((aim - r.first) / ifi);
+    if (tick <= r.lastTick) tick = r.lastTick + 1;
+    r.lastTick = tick;
+    r.ticks.push_back(tick);
+}
+}  // namespace
+void pm::startMovieRecording(const std::string &path, const std::string &codec, double scale, bool sound, bool virtualClock) {
+    if(exportOnly&&!virtualClock)fail("Export requires clock=virtual.");
+    requireOpen();
+    if (mockRecorder) fail("A movie is already being recorded; StopMovieRecording first.");
+    if (!(scale >= 0.05 && scale <= 1)) fail("scale must be 0.05 to 1.");
+    if (codec != "prores4444" && codec != "prores422" && codec != "hevc" && codec != "h264")
+        fail("codec must be prores4444, prores422, hevc or h264.");
+    auto ext = path.size() > 4 ? path.substr(path.size() - 4) : std::string();
+    for (char &c : ext) c = (char)std::tolower((unsigned char)c);
+    if (ext != ".mov" && ext != ".mp4" && ext != ".m4v") fail("The movie file must end in .mov, .mp4 or .m4v.");
+    if (codec.rfind("prores", 0) == 0 && ext != ".mov") fail("ProRes is written to a .mov file.");
+    if(virtualClock && sound && pm::audioStatus().voices) fail("Stop existing sounds before virtual-clock recording.");
+    mockRecorder = std::make_unique<MockRecording>();
+    mockRecorder->path = path; mockRecorder->codec = codec; mockRecorder->scale = scale;
+    mockRecorder->sound = sound && pm::audioStatus().open;
+    mockRecorder->virtualClock=virtualClock;
+    if(virtualClock) {recordingClock.begin(clockNow(),ifi);if(exportOnly)recordingClock.beginSequence(clockNow());}
+}
+namespace {
+// Close finishes a recording, as on a Mac.
+void clearMockMovies() {
+    mockMovies.clear();
+    if (mockRecorder && !mockRecorder->ticks.empty()) {
+        mockRecorded[mockRecorder->path] = mockRecorder->ticks;
+        const double stopped=mockRecorder->virtualClock?pm::now():NAN;
+        mockRecordedDuration[mockRecorder->path]=pm::recording::endingTick(stopped,mockRecorder->first,mockRecorder->lastTick,ifi)*ifi;
+    }
+    mockRecorder.reset();
+    recordingClock.end();
+}
+}  // namespace
+pm::MovieRecording pm::stopMovieRecording() {
+    if (!mockRecorder) fail("No movie is being recorded.");
+    std::unique_ptr<MockRecording> r = std::move(mockRecorder);
+    const double logicalStop=r->virtualClock?pm::now():NAN;
+    recordingClock.end();
+    if (r->ticks.empty()) fail("No frames were presented while recording; no movie was written.");
+    pm::MovieRecording out;
+    out.path = r->path; out.codec = r->codec; out.virtualClock=r->virtualClock;
+    out.width = std::max(2.0, std::round(display.w * r->scale / 2) * 2);
+    out.height = std::max(2.0, std::round(display.h * r->scale / 2) * 2);
+    out.frames = (double)r->ticks.size();
+    out.refreshes = (double)pm::recording::endingTick(logicalStop,r->first,r->lastTick,ifi);
+    out.refreshHz = 1 / ifi;
+    out.duration = out.refreshes * ifi;
+    out.sound = r->sound;                         // the scripted output plays to the movie as it would on a Mac
+    out.soundSeconds = r->sound ? out.duration : 0;
+    mockRecorded[r->path] = r->ticks;
+    mockRecordedDuration[r->path]=out.duration;
+    if (r->sound) mockRecordedSound.insert(r->path); else mockRecordedSound.erase(r->path);
+    return out;
+}
+void pm::closeMovie(uint64_t movie) {
+    if (!mockMovies.erase(movie)) fail("Unknown or closed movie handle.");
+}
+
+// ---- audio ------------------------------------------------------------------------
+// The real host side (PsychMetalAudioHost.h) and real-time core run here against
+// a simulated device: a thread renders 64-frame buffers at 48 kHz on the real
+// clock, just ahead of their time, and feeds the input with what was just
+// played (a loopback) plus a quiet 440 Hz tone. 5 ms output and 3 ms input
+// latency. Environment (read at OpenAudio):
+//   PM_MOCK_AUDIO_ROUTE  "bluetooth": the output is Bluetooth (untimed)
+//   PM_MOCK_AUDIO_LEVEL  the tone's amplitude, default 0.05
+//   PM_MOCK_MICROPHONE   "denied": opening input fails as a refused microphone does
+//   PM_MOCK_AUDIO_INTERRUPT "SECONDS": an interruption that many seconds after opening
+//   PM_MOCK_AUDIO_GAP "SECONDS": the device stops for 100 ms that many seconds after opening,
+//                     unreported, as an output that stalls does
+// Frame lookups read the scripted history without a lock: audio and drawing
+// from two threads at once are not simulated.
+#include "PsychMetalAudioHost.h"
+namespace {
+struct MockAudio {
+    std::unique_ptr<pm::audio::Session> session;
+    std::thread device;
+    std::atomic<bool> running{false}, lost{false};
+    double level = 0.05;
+    double interruptAfter = -1;          // PM_MOCK_AUDIO_INTERRUPT: seconds after opening
+    double gapAfter = -1;                // PM_MOCK_AUDIO_GAP: seconds after opening
+};
+std::unique_ptr<MockAudio> mockAudio;
+
+const pm::FrameRecord *historyFor(uint64_t token) {
+    for (auto it = history.rbegin(); it != history.rend(); ++it)
+        if (it->token == token) return &*it;
+    return nullptr;
+}
+
+void runMockDevice(MockAudio *m) {
+    pm::audio::Session &s = *m->session;
+    const uint32_t frames = s.info.bufferFrames;
+    std::vector<float> left(frames), right(frames), input(frames);
+    float *out[2] = {left.data(), right.data()};
+    const float *in[1] = {input.data()};
+    double start = clockNow() + 0.002;
+    for (uint64_t buffer = 0; m->running.load(); buffer++) {
+        double due = start + (double)buffer * frames / s.info.rate;   // when this buffer's IO cycle begins
+        while (clockNow() < due - 0.0005 && m->running.load()) std::this_thread::sleep_for(std::chrono::microseconds(200));
+        s.mixer.render(out, s.info.channels, frames, due + s.info.outputLatency, s.info.rate);
+        if (m->gapAfter >= 0 && due - start >= m->gapAfter) {
+            m->gapAfter = -1;
+            start += 0.1;                // the next buffer comes 100 ms late, nothing said
+        }
+        if (m->interruptAfter >= 0 && due - start >= m->interruptAfter) {
+            m->interruptAfter = -1;
+            m->lost.store(true);
+        }
+        if (s.info.input) {
+            for (uint32_t i = 0; i < frames; i++) {
+                double t = due + (double)i / s.info.rate;
+                input[i] = left[i] + (float)(m->level * std::sin(2 * M_PI * 440 * t));
+            }
+            s.recorder.capture(in, 1, frames, due - s.info.inputLatency, s.info.inputRate);
+        }
+    }
+}
+pm::audio::Session &mockSession() {
+    if (!mockAudio) pm::audio::sessionFail("Audio is not open; call OpenAudio first.");
+    return *mockAudio->session;
+}
+}  // namespace
+
+std::vector<pm::AudioDevice> pm::audioDevices() {
+    return {{71, "Scripted Speakers", "built-in", 2, 0, 48000, true, false},
+            {72, "Scripted Microphone", "built-in", 0, 1, 48000, false, true}};
+}
+pm::AudioInfo pm::openAudio(const pm::AudioOptions &o) {
+    if(recordingClock.active()) fail("Open audio before virtual-clock recording.");
+    if (mockAudio) fail("Audio is already open. Close it first.");
+    if (o.channels < 1 || o.channels > 2) fail("The output device has 2 channels.");
+    if (o.inputChannels != 1) fail("The input device has 1 channels.");
+    if (const char *mic = std::getenv("PM_MOCK_MICROPHONE"); o.input && mic && std::string(mic) == "denied")
+        throw pm::Error(pm::kErrMicrophone, "Microphone access is off (scripted).");
+    if (o.bufferFrames < 16 || o.bufferFrames > 4096) fail("bufferFrames must be 16 to 4096.");
+    if (!(o.rate == 0 || o.rate == 48000)) fail("The device does not accept that sample rate.");
+    if (!(o.recordSeconds > 0 && o.recordSeconds <= 3600)) fail("recordSeconds must be more than 0 and at most 3600.");
+    if (o.device >= 0 && o.device != 71) fail("That device has no audio output; see AudioDevices.");
+    const char *route = std::getenv("PM_MOCK_AUDIO_ROUTE");
+    bool bluetooth = route && std::string(route) == "bluetooth";
+    if (bluetooth && !o.anyRoute)
+        throw pm::Error(pm::kErrAudio, "The audio output is Bluetooth, whose latency is long and variable. "
+                                        "Use wired or built-in output, or pass anyRoute (routes='any') to play untimed.");
+    auto m = std::make_unique<MockAudio>();
+    if (const char *l = std::getenv("PM_MOCK_AUDIO_LEVEL")) m->level = std::atof(l);
+    if (const char *i = std::getenv("PM_MOCK_AUDIO_INTERRUPT"); i && *i) m->interruptAfter = std::atof(i);
+    if (const char *g = std::getenv("PM_MOCK_AUDIO_GAP"); g && *g) m->gapAfter = std::atof(g);
+    MockAudio *lostOf = m.get();
+    pm::audio::Platform platform;
+    platform.outputTime=[](double when) {
+        const double wall=clockNow();
+        return recordingClock.active()?wall+when-recordingClock.now(wall):when;
+    };
+    platform.framePhysical = [](uint64_t token) {auto r=historyFor(token);return r?r->projected:NAN;};
+    platform.frameProjected = [](uint64_t token) {if(recordingClock.active())return recordingClock.queuedTime(token);auto r = historyFor(token); return r ? r->projected : NAN; };
+    platform.framePresented = [](uint64_t token) {
+        auto r = historyFor(token);
+        return (r && r->status == 0 && r->presented > 0) ? r->presented : NAN;
+    };
+    platform.convertRate = [](const std::vector<float> &in, uint32_t channels, uint64_t frames, double from, double to,
+                              uint64_t &outFrames) {
+        outFrames = (uint64_t)std::floor((frames - 1) * to / from) + 1;
+        std::vector<float> out((size_t)channels * outFrames);
+        for (uint32_t c = 0; c < channels; c++)
+            for (uint64_t i = 0; i < outFrames; i++) {      // linear: a stand-in for Core Audio's converter
+                double x = i * from / to;
+                uint64_t k = (uint64_t)x;
+                double f = x - (double)k;
+                float a = in[(size_t)c * frames + k], b = in[(size_t)c * frames + std::min(k + 1, frames - 1)];
+                out[(size_t)c * outFrames + i] = (float)(a + (b - a) * f);
+            }
+        return out;
+    };
+    platform.takeLost = [lostOf] { return lostOf->lost.exchange(false); };
+    platform.warn = [](const char *id, const char *message) { if (hooks.warn) hooks.warn(id, message); };
+    m->session = std::make_unique<pm::audio::Session>(std::move(platform));
+    pm::AudioInfo &info = m->session->info;
+    info.rate = 48000; info.channels = o.channels; info.bufferFrames = o.bufferFrames;
+    info.outputLatency = 0.005; info.device = "Scripted Speakers";
+    info.transport = bluetooth ? "Bluetooth" : "built-in"; info.timed = !bluetooth;
+    info.input = o.input;
+    if (o.input) {
+        info.inputRate = 48000; info.inputChannels = 1; info.inputBufferFrames = o.bufferFrames;
+        info.inputLatency = 0.003; info.inputDevice = "Scripted Microphone"; info.inputTransport = "built-in";
+        info.recordSeconds = o.recordSeconds;
+        m->session->allocateInput(1, o.recordSeconds);
+    }
+    m->running = true;
+    MockAudio *raw = m.get();
+    m->device = std::thread([raw] { runMockDevice(raw); });
+    mockAudio = std::move(m);
+    if (bluetooth && hooks.warn)
+        hooks.warn(pm::kWarnAudioRoute, "Audio plays through Bluetooth; its latency is unknown, so sound times are not timing measurements.");
+    return mockAudio->session->info;
+}
+void pm::closeAudio() {
+    if (!mockAudio) return;
+    mockAudio->session->finish();
+    mockAudio->running = false;
+    mockAudio->device.join();
+    mockAudio.reset();
+}
+pm::AudioStatus pm::audioStatus() { return mockAudio ? mockAudio->session->status() : pm::AudioStatus{}; }
+uint64_t pm::makeAudioStream(uint64_t frames,uint32_t channels){return mockSession().makeStream(frames,channels);}
+uint64_t pm::refillSound(uint64_t h,const pm::ArrayView &v,bool final){return mockSession().refill(h,v,final);}
+pm::AudioStreamStatus pm::audioStreamStatus(uint64_t h){return mockSession().streamStatus(h);}
+uint64_t pm::makeSound(const pm::ArrayView &v, double rate) { return mockSession().makeSound(v, rate); }
+void pm::closeSound(uint64_t sound) { mockSession().closeSound(sound); }
+uint64_t pm::play(uint64_t sound, double when, uint64_t frame, double offset, double gain, uint32_t repeats) {
+    return mockSession().play(sound, when, frame, offset, gain, repeats);
+}
+void pm::stopSound(uint64_t voice, double when) { mockSession().stopSound(voice, when); }
+void pm::modulate(uint64_t voice, double hz, double phase, double depth, double when) {
+    mockSession().modulate(voice, hz, phase, depth, when);
+}
+uint64_t pm::startRecording(double when) { return mockSession().startRecording(when); }
+void pm::stopRecording(double when) { mockSession().stopRecording(when); }
+pm::Recording pm::getRecording() { return mockSession().recording(); }
+uint64_t pm::voiceKey(double threshold, double when, double window, uint32_t minimum) {
+    return mockSession().voiceKey(threshold, when, window, minimum);
+}
+pm::InputRecent pm::inputRecent(double seconds) { return mockSession().recent(seconds); }
+std::vector<pm::AudioEvent> pm::audioResults() { return mockSession().results(); }
+
+
+uint64_t pm::createImagePipeline(const pm::ArrayView &v){requireOpen();if(v.ndim!=2||v.shape[1]!=32||!v.shape[0])fail("program");auto h=mockNextImagePipeline++;mockImagePipelines[h]=1;return h;}
+uint64_t pm::processImage(uint64_t p,uint64_t source,uint64_t destination){requireOpen();if(!mockImagePipelines.count(p))fail("pipeline");
+ auto f=textures.find(source);if(f==textures.end())fail("source");if(destination && !textures.count(destination))fail("destination");
+ if(!destination)destination=nextHandle++;textures[destination]=f->second;return destination;}
+void pm::closeImagePipeline(uint64_t p){if(!mockImagePipelines.erase(p))fail("pipeline");}

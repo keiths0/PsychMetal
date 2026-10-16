@@ -1,0 +1,218 @@
+# PsychMetal 0.10.1 validation — October 16, 2026
+
+GitHub release preparation is complete. PyPI and App Store publication are
+separate; neither is performed by this release.
+
+## Physical Mac results supplied by Keith
+
+- SDR/10-bit readback: 46/46 checks passed, including 256 consecutive 10-bit
+  levels recovered exactly. Texture snapshot/handle, queued-frame closure and
+  reopen calls passed. Keith confirmed that the demonstrations work.
+- Actual Metal imaging fixture passed: HDR-preserving exposure, color matrix,
+  convolution direction, inverse affine translation and Gaussian blur pixels.
+- Motion at 1024 and 2048: each 600/600 confirmed at 60.000 Hz, zero long
+  adjacent intervals and zero missing warm-up/measured timestamps. Median
+  uploads were 1.560 and 6.820 ms respectively.
+- Repeated startup: all 50 opens passed; whole Open took 0.078..0.129 seconds.
+  Scheduled first frames were 13.735..14.817 ms after the requested time,
+  within one 60 Hz refresh. This does not establish sub-millisecond scheduling.
+  Startup retries were absorbed before the first stimulus.
+- Streaming PCM demo: zero underflow frames, capacity 4410, written 339236,
+  consumed 338240, queued 996. The output does not establish a full 30-second
+  run. Keith confirmed smooth functional behavior of the tested demos.
+- Keith confirmed the Mac and phone checks work. Individual phone scenarios,
+  devices/orientations, underflow counts and undisturbed timing logs were not
+  separately supplied. This is functional acceptance by eye/ear.
+
+## Software verification
+
+Final regression suite passed with explicit --skip-media-fixtures: scripted
+inventory 295/295 across 114 commands, readback 46/46, Python/Octave demo and
+phone UI regressions, real-SDK type checks, ASan/UBSan and ThreadSanitizer
+fixtures. GPU execution and AVFoundation codec fixtures were explicitly skipped
+in this execution environment; Keith's separate Metal imaging result is above.
+Engine/binding and sanitizer details are in
+[DEVELOPMENT-0.10.1.md](DEVELOPMENT-0.10.1.md).
+The Python 3.14 Mac wheel imports as 0.10.1 outside the checkout; its Python
+sources match the package. The source archive includes the imaging/audio
+headers and shader compiler helper, without prebuilt extensions. The app was rebuilt with the current menu/noise sources
+and passed bundle/privacy checks (0.10.1 build 1; 88 compatible frameworks).
+
+## Limits
+
+No photodiode, loopback or physical light/sound onset measurements were made.
+The Mac link reports DSC; GPU readback cannot establish the panel's final output.
+Broader monitor/iPad/device coverage, MATLAB execution, HDR display readback,
+alpha/affine edge cases, capture comparisons, physical endpoint recovery and
+successful conversion/preload across real codecs remain unverified.
+Software regression uses --skip-media-fixtures because AVFoundation fixtures
+cannot encode reliably in this execution environment. GPU fixtures also skip
+here; the imaging fixture above was executed on Keith's Mac.
+The supplied Octave binary requires Octave 11.3/macOS 26; MATLAB/Python target
+macOS 14+, toolbox iOS wheels 15+, and the phone demo app 17+.
+Unsigned bundle checks do not constitute a signed App Store archive or Apple's
+server-side validation. GitHub, PyPI and App Store publication are separate.
+
+---
+
+# PsychMetal 0.10.0 validation — October 15, 2026
+
+- Available software regressions passed with explicit --skip-media-fixtures:
+  scripted inventory 286/286 over 106 commands and readback 46/46; host bindings,
+  demos, bounded failure paths and native ASan/UBSan/TSan fixtures passed.
+- Native engine checks passed against macOS, iOS device and ARM64 simulator SDKs.
+  Octave, MATLAB and Python 3.15 Mac modules rebuilt successfully. Both iOS
+  wheels and the generic iPhone app build successfully; bundle/privacy preflight
+  passed with 88 frameworks and fresh source/assets.
+- The user confirmed iPhone sound recording, standalone export, recorded-movie
+  replay and the revised demo launch pages, including Hidden ring controls.
+  These are functional checks by eye/ear, not physical onset measurements.
+- UI navigation checks passed after the final layout changes, including sharing
+  cancellation, Start actions and Hidden ring option forwarding.
+
+## Explicit remaining limits
+
+This execution environment exposes no Metal GPU or physical audio/display
+hardware. GPU pixel fixtures compile but skip execution here. Real AVFoundation
+encoding fixtures failed here (including InvalidSession/“Cannot Encode”); they
+were explicitly omitted from the otherwise passing software suite. The cause
+has not been established. A converter failure preserved its prior destination
+and cleaned its temporary output; successful conversion is not certified.
+
+Whole-movie preload/conversion on real codecs, 4K/6K throughput, 50 consecutive
+Mac opens, capture/tearing comparisons and physical Mac endpoint-removal recovery
+remain unverified. Latest engine changes do not inherit certification from older
+phone builds. The broader iPad/monitor/refresh-rate matrix remains incomplete.
+No photodiode, loopback or audiovisual measurement probes were added or required
+for this release; software timestamps do not certify emitted light/sound timing.
+Unsigned app builds/privacy checks do not constitute App Store validation.
+
+Octave's supplied binary uses Octave 11.3 libraries requiring macOS 26;
+MATLAB/Python target macOS 14+. The toolbox iOS wheels target iOS 15+, while the
+phone demo app requires iOS 17+. Historical 0.9.0 evidence follows; it must not
+be read as acceptance of 0.10.0. Remote 0.10.0 CI is still pending publication.
+See AUDIT-0.10.0.md, WISHLIST-0.10.0.md and DEVELOPMENT-0.10.0.md for details.
+
+---
+
+# PsychMetal 0.9.0 validation — local acceptance, October 12, 2026
+
+Final rebuilt Mac binaries passed the checks recorded below, and Keith reported
+that the iPhone tests work. These are functional acceptance results, not
+physical timing certification. Remote Linux/macOS CI and all five Mac wheel builds passed for source commit
+90d6417; links below.
+
+## Completed checks (automated, against the current 0.9.0 sources)
+
+- Real macOS, iOS device and ARM64 simulator SDK type checks of the engine,
+  audio included, passed with -Wall -Wextra -Wpedantic.
+- Full regression runner passed, including both host bindings against the
+  scripted engine. Octave inventory: **249/249 checks across 92 commands**;
+  readback: **46/46**. Python front end, demos, phone menu/report tests, custom
+  shader validation, cancellation and adaptive wait tests passed.
+- Audio core under AddressSanitizer/UndefinedBehaviorSanitizer and
+  ThreadSanitizer: sample-exact starts and stops across buffers of any size,
+  late starts, repeats, mixing, clipping, capacity, clock-rate drift; recording,
+  voice key and the input monitor read while written; amplitude modulation on
+  GetSecs time with timed changes on the exact sample. A flat-out writer against
+  the largest monitor read refused overwritten reads and returned no wrong
+  samples. The audio host under both sanitizers: a recording restarted while
+  being copied, unaligned and reversed-stride sounds, float overflow rejected,
+  and input and output events merged in time order (AUDIT-0.9.0.md). Voices
+  retired and sounds released through a burst past the mixer's voices and the
+  event ring; handles across close and reopen never alias.
+- Through the scripted 48 kHz loopback device, from Python and through MEX:
+  scheduled and frame-keyed sounds, modulation read back sample for sample
+  within 1e-5, recording on exact samples, the voice key's time and frame, a
+  refused microphone (PsychMetal:Microphone), Bluetooth refusal and the route
+  warning.
+- Both sound demos by scripted mouse and keys (Python, Octave) and by scripted
+  finger on a portrait phone screen; the matching demo's frequencies have an even
+  number of frames per cycle at every refresh rate tested, with peak and trough
+  on frames, and its blob and tone follow the same function of time.
+- Phone packaging: the menu lists every non-keyboard demo; help, privacy policy
+  and support site pages agree; the bundle check requires the microphone usage
+  text.
+
+## On hardware so far (by eye and ear, not measurement)
+
+- Mac: built against the real SDK after a naming clash with the SDK's `struct
+  session` was fixed; the spectrogram demo recorded and played back.
+- Mac Studio Speakers, from Python: opening at 48000 Hz moved the device from
+  44100 to 48000 and closing put 44100 back. With audio open, a change to
+  96000 Hz in Audio MIDI Setup gave the route warning and `timed` false at the
+  next call, and closing left 96000 in place. (The first run found that every
+  new rate failed: the device switches after the request returns. Fixed.)
+- iPhone: device and simulator wheels built; the app built and ran. The matching
+  demo's tones played from the speaker. Recorder playback went to the earpiece;
+  the fix (moving output from the receiver to the speaker) is in these sources.
+  The Mac binaries and both wheels were rebuilt from the final sources, and the
+  app built from them; its sound checks are below.
+
+## Final physical acceptance — October 12, 2026
+
+- Mac Octave inventory repeat: **249/249 across 92 commands**. The first run
+  passed 248/249: relative WaitSecs median overshoot was 667.9 microseconds
+  against a 600 microsecond tolerance (worst 918.7). Both absolute and relative
+  waits passed on repeat; retain the first result as evidence of intermittent
+  scheduling variability, not a guarantee of future wait precision.
+- GPU polygon and custom-shader tests passed on Keith's Mac. Hardware handle/
+  snapshot test completed; readback passed **46/46**; startup **10/10** passed.
+- Motion tests at 1024 and 2048: each **600/600 confirmed**, **60.000 Hz**, zero
+  long adjacent intervals and zero missing measured timestamps. Median uploads
+  were 1.519 and 6.157 ms respectively.
+- Python sound demos completed without exceptions. Octave recorder returned a
+  1.2333-second recording with record/play/stop actions and microphone access;
+  the matching demo returned a completed phase trial. This is not MATLAB testing.
+- Keith reported that the iPhone tests work. The supplied console shows no
+  Python exception or Metal assertion. It does show a debugger attached, so
+  this log cannot certify undisturbed frame timing. Individual route and
+  permission scenarios were not separately logged.
+- Offline device and simulator builds passed bundle and privacy checks, with
+  88 compatible frameworks each. The device bundle contains Assets.car and
+  configured iPhone/iPad AppIcon files despite the runtime fallback-icon warning.
+
+## Release verification
+
+- [Linux/macOS CI](https://github.com/keiths0/PsychMetal/actions/runs/38310222083) passed for source commit 90d6417.
+- [Python 3.10–3.14 Mac wheels and source distribution](https://github.com/keiths0/PsychMetal/actions/runs/38310243097) passed.
+  Subsequent release-record edits do not change native or Python package sources.
+- Publication metadata is dated October 12; regenerate manifest/checksums
+  after any further release edits.
+- Broader hardware coverage below remains outside this acceptance run.
+
+## Limits
+
+Audio times are those Core Audio and the iOS audio session report. They have not
+been measured with a microphone, a photodiode or a loopback cable; a
+loudspeaker, a display's own processing and a device that misreports its
+latency add delay no software sees. The same holds for presentation timestamps:
+GPU pixels and reported times do not prove emitted-light timing. Photodiode and
+microphone measurement is required for those claims.
+
+This execution environment has no accessible Metal GPU, audio device or active
+display; Metal pixel fixtures compile but skip execution here. Unsigned builds
+and offline privacy checks are not a signed App Store archive or Apple's
+server-side validation. The broader hardware matrix includes MATLAB/Octave/Python
+on the same Mac, 60 Hz and high-refresh displays, HiDPI and multiple monitors,
+iPhone/iPad in both orientations, and background/resume. The supplied Octave
+binary uses Octave 11.3 libraries requiring macOS 26; MATLAB/Python target
+macOS 14+. Video is deferred to 0.10.0. GitHub release and Apple submission are
+separate.
+
+## 0.10.0 wishlist coding pass — October 15, 2026
+
+Current source verification: all available software regressions passed with
+explicit --skip-media-fixtures (scripted inventory 286/286 over 106 commands;
+readback 46/46). Mac/iOS/simulator SDK and portable declaration checks pass.
+New native fixtures exercise private uploads, float packing, preload/cache
+limits, movie report progression, sample-event timing and Mac audio recovery
+under sanitizers. Mac binaries and iOS wheels were rebuilt; the generic iPhone
+app builds and passes bundle/privacy preflight (88 frameworks).
+
+These results do not certify real GPU pixels, successful conversion/codec
+throughput, capture/tearing behavior, 50-open readiness, physical device recovery
+or physical sound/light timing. A real conversion failure preserved the previous
+destination and removed its temporary output. Hardware acceptance remains
+required; excluded measurement probes were not added or changed. See
+WISHLIST-0.10.0.md and DEVELOPMENT-0.10.0.md for APIs, evidence and logs.
