@@ -1,26 +1,56 @@
 name: Wheels
 
-# Builds psychmetal wheels for every supported Python on Apple silicon, plus a
-# source distribution. A manual run (Actions tab -> Wheels -> Run workflow) only
-# builds, to check. PyPI publication requires the explicit manual option on a tag.
+# To rebuild an existing release, run this workflow from main and supply its
+# release_tag. Sources are pinned to the resolved tag commit, not main.
+# PyPI publication remains an explicit manual option.
 on:
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: 'Release tag to build (e.g. v0.11.0); blank builds the newest package'
+        type: string
+        default: ''
       publish_pypi:
-        description: 'Publish to PyPI (run against the release tag)'
+        description: 'Publish the selected release to PyPI'
         type: boolean
         default: false
   push:
     tags: ['v*']
 
-env:
-  PACKAGE_DIR: PsychMetal-0.10.1
+permissions:
+  contents: read
 
 jobs:
-  wheels:
-    runs-on: macos-15
+  target:
+    runs-on: ubuntu-24.04
+    outputs:
+      package_dir: ${{ steps.package.outputs.package_dir }}
+      version: ${{ steps.package.outputs.version }}
+      commit: ${{ steps.package.outputs.commit }}
+      publish: ${{ steps.package.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Resolve and validate package version
+        id: package
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi }}
+        run: |
+          args=(--tag "$RELEASE_TAG")
+          if [ "$PUBLISH" = true ]; then args+=(--publish); fi
+          python3 .github/scripts/package_target.py "${args[@]}"
+
+  wheels:
+    needs: target
+    runs-on: macos-15
+    env:
+      PACKAGE_DIR: ${{ needs.target.outputs.package_dir }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.target.outputs.commit }}
       - name: Ensure the Metal compiler is available
         run: |
           if ! xcrun -sdk macosx metal --version; then
@@ -35,28 +65,45 @@ jobs:
         with:
           name: wheels
           path: wheelhouse/*.whl
+          if-no-files-found: error
 
   sdist:
+    needs: target
     runs-on: macos-15
+    env:
+      PACKAGE_DIR: ${{ needs.target.outputs.package_dir }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.target.outputs.commit }}
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Tag matches the package version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          grep -qx "version = \"${GITHUB_REF_NAME#v}\"" "$PACKAGE_DIR/pyproject.toml" ||
-            { echo "Tag $GITHUB_REF_NAME does not match the version in $PACKAGE_DIR/pyproject.toml"; exit 1; }
       - run: python -m pip install build && python -m build --sdist "$PACKAGE_DIR" --outdir dist
       - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: dist/*.tar.gz
+          if-no-files-found: error
+
+  verify:
+    needs: [target, wheels, sdist]
+    runs-on: ubuntu-24.04
+    steps:
+      # Use the workflow revision's verifier, even when the source tag predates it.
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Check every artifact against the selected version
+        env:
+          VERSION: ${{ needs.target.outputs.version }}
+        run: python3 .github/scripts/check_distributions.py dist "$VERSION"
 
   publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_pypi && startsWith(github.ref, 'refs/tags/v')
-    needs: [wheels, sdist]
+    if: needs.target.outputs.publish == 'true'
+    needs: [target, verify]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
