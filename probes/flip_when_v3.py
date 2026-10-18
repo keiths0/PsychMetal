@@ -86,7 +86,8 @@ def main():
         print('0 shown, 1 dropped by the system (replaced before it was shown), 2 no report yet:')
         for s in odd:
             print('    ' + ' '.join(str(x) for x in s))
-    print(f'\n{len(results)} trials, {bad} wrong. PM_HOLD_LIMIT={os.environ.get("PM_HOLD_LIMIT", "15 (default)")}')
+    hold = f' PM_HOLD_LIMIT={os.environ["PM_HOLD_LIMIT"]} (read by 0.10.1 only).' if 'PM_HOLD_LIMIT' in os.environ else ''
+    print(f'\n{len(results)} trials, {bad} wrong. PsychMetal {pm.version()}.{hold}')
 
 
 if __name__ == '__main__':
