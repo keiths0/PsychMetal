@@ -39,6 +39,12 @@ PyPI publication and App Store submission are separate actions.
 
 ## Previous releases
 
+Version 0.10.1 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.10.1), [changelog](PsychMetal-0.10.1/CHANGELOG.md)) added relative-linear HDR/EDR, reusable GPU image-processing pipelines and online audio buffer refilling, with matching Mac and phone demos.
+
+Version 0.10.0 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.10.0), [changelog](PsychMetal-0.10.0/CHANGELOG.md)) added movie playback with audio, stimulus recording and standalone Metal movie export, plus analytic arcs, movie preload/conversion and phone recording/replay/export controls.
+
+Version 0.9.0 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.9.0), [changelog](PsychMetal-0.9.0/CHANGELOG.md)) introduced native audio across Mac and iPhone/iPad: scheduled playback, sample-timed amplitude modulation, microphone recording, voice-key detection and live input monitoring. It also updated GPU polygon rendering and simplified presentation APIs.
+
 Version 0.8.1 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.8.1), [changelog](PsychMetal-0.8.1/CHANGELOG.md)) fixed first-launch phone sharing and menu recovery, hid diagnostic tools when Diagnostic mode is off, improved Python cancellation and argument validation, and added MATLAB/Octave environment export and recent-frame snapshots.
 
 Version 0.7.1 ([release](https://github.com/keiths0/PsychMetal/releases/tag/v0.7.1)) optimized readback and introduced the phone gallery and timing reports. Its source is preserved at the release tag.
